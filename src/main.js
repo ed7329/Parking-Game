@@ -1,12 +1,17 @@
 import * as THREE from 'three';
 import { LEVELS } from './levels.js';
-import { Car, CAR, buildCarMesh } from './car.js';
+import { Car } from './car.js';
+import { VEHICLES, buildVehicleMesh } from './vehicles.js';
+import { TrafficCar } from './traffic.js';
+import { Sound } from './audio.js';
 import { obbIntersects, pointObbDistance, cornersInside, angleDiff, axes } from './collision.js';
 
 const PARKED_COLORS = [0x2a9d8f, 0xe9c46a, 0x264653, 0xf4a261, 0x8d99ae, 0xf1faee, 0x457b9d, 0x6d597a, 0x3a3a3a];
 const ALIGN_TOLERANCE = 0.2; // radians (~11 degrees)
 const STOP_SPEED = 0.25;
 const HOLD_TIME = 1.0;
+const CAMERA_MODES = ['chase', 'top', 'first'];
+const CAMERA_LABELS = { chase: 'Chase camera', top: 'Top-down camera', first: 'First-person camera' };
 
 // ---------- Renderer & scene ----------
 const canvas = document.getElementById('game');
@@ -29,15 +34,16 @@ scene.add(sun);
 
 const player = new Car();
 scene.add(player.mesh);
+const sound = new Sound();
 
 let levelGroup = null;
 let obstacles = [];
+let traffic = [];
 let targetMarker = null;
-let targetArrow = null;
 
 // ---------- Game state ----------
 const state = {
-  mode: 'menu', // 'menu' | 'playing' | 'complete'
+  mode: 'menu', // 'menu' | 'playing' | 'complete' | 'failed'
   levelIndex: 0,
   time: 0,
   hits: 0,
@@ -64,6 +70,8 @@ const storage = {
   },
 };
 let progress = storage.load();
+
+const currentLevel = () => LEVELS[state.levelIndex];
 
 // ---------- Level building ----------
 function box(w, h, d, color, opts = {}) {
@@ -124,6 +132,11 @@ function addTree(group, x, z, s) {
   group.add(trunk, crown);
 }
 
+function markShared(obj) {
+  obj.traverse((o) => (o.userData.shared = true));
+  return obj;
+}
+
 function buildLevel(level) {
   if (levelGroup) {
     scene.remove(levelGroup);
@@ -136,6 +149,7 @@ function buildLevel(level) {
   }
   levelGroup = new THREE.Group();
   obstacles = [];
+  traffic = [];
   scene.add(levelGroup);
 
   const { w, d } = level.lot;
@@ -148,30 +162,44 @@ function buildLevel(level) {
     new THREE.MeshStandardMaterial({ color: level.indoor ? 0x50545a : 0x5d8f4c, roughness: 1 }),
   );
   ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.03;
   ground.receiveShadow = true;
   levelGroup.add(ground);
   groundStrip(levelGroup, 0, 0, 0, w, d, level.indoor ? 0x5f636a : 0x3b3e44, 0.005);
 
-  // Perimeter walls.
+  // Perimeter. Tunnel levels get deep dark blocks at each end that traffic
+  // drives into and out of.
   const wallColor = level.indoor ? 0x8b9097 : 0xb5b0a5;
-  const wallH = level.indoor ? 3.2 : 0.9;
+  const wallH = level.wallHeight ?? (level.indoor ? 3.2 : 0.9);
   addObstacle(levelGroup, { x: 0, z: d / 2 + 0.25, heading: 0, hw: w / 2 + 0.5, hl: 0.25, h: wallH }, wallColor);
   addObstacle(levelGroup, { x: 0, z: -d / 2 - 0.25, heading: 0, hw: w / 2 + 0.5, hl: 0.25, h: wallH }, wallColor);
-  addObstacle(levelGroup, { x: w / 2 + 0.25, z: 0, heading: 0, hw: 0.25, hl: d / 2, h: wallH }, wallColor);
-  addObstacle(levelGroup, { x: -w / 2 - 0.25, z: 0, heading: 0, hw: 0.25, hl: d / 2, h: wallH }, wallColor);
+  for (const side of [-1, 1]) {
+    if (level.tunnels) {
+      addObstacle(levelGroup, { x: side * (w / 2 + 8), z: 0, heading: 0, hw: 8, hl: d / 2 + 0.5, h: 5, color: 0x2a2c31 });
+    } else {
+      addObstacle(levelGroup, { x: side * (w / 2 + 0.25), z: 0, heading: 0, hw: 0.25, hl: d / 2, h: wallH }, wallColor);
+    }
+  }
 
   for (const s of level.spots ?? []) drawSpotLines(levelGroup, s);
   for (const wall of level.walls ?? []) addObstacle(levelGroup, wall);
 
   (level.parked ?? []).forEach((p, i) => {
+    const type = p.type ?? 'sedan';
     const color = PARKED_COLORS[(i * 5 + state.levelIndex * 3) % PARKED_COLORS.length];
-    const mesh = buildCarMesh(color);
-    mesh.traverse((o) => (o.userData.shared = true));
+    const mesh = markShared(buildVehicleMesh(type, color));
     mesh.position.set(p.x, 0, p.z);
     mesh.rotation.y = p.heading;
     levelGroup.add(mesh);
-    obstacles.push({ x: p.x, z: p.z, heading: p.heading, hw: CAR.hw, hl: CAR.hl });
+    obstacles.push({ x: p.x, z: p.z, heading: p.heading, hw: VEHICLES[type].hw, hl: VEHICLES[type].hl });
   });
+
+  for (const t of level.traffic ?? []) {
+    const car = new TrafficCar(t);
+    markShared(car.mesh);
+    levelGroup.add(car.mesh);
+    traffic.push(car);
+  }
 
   const coneMat = new THREE.MeshStandardMaterial({ color: 0xff6b1a, roughness: 0.6 });
   for (const c of level.cones ?? []) {
@@ -201,7 +229,6 @@ function buildLevel(level) {
   );
   targetMarker.add(edges);
 
-  targetArrow = null;
   if (t.dir === 'forward') {
     const shape = new THREE.Shape();
     shape.moveTo(0, 1.1);
@@ -211,15 +238,23 @@ function buildLevel(level) {
     shape.lineTo(-0.25, -1.0);
     shape.lineTo(-0.25, 0.1);
     shape.lineTo(-0.7, 0.1);
-    targetArrow = new THREE.Mesh(
+    const arrow = new THREE.Mesh(
       new THREE.ShapeGeometry(shape),
       new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false }),
     );
     // Laid flat, the shape's +y points along -z; turn it to face the target heading.
-    targetArrow.rotation.set(-Math.PI / 2, t.heading + Math.PI, 0, 'YXZ');
-    targetArrow.position.set(t.x, 0.02, t.z);
-    levelGroup.add(targetArrow);
+    arrow.rotation.set(-Math.PI / 2, t.heading + Math.PI, 0, 'YXZ');
+    arrow.position.set(t.x, 0.02, t.z);
+    levelGroup.add(arrow);
   }
+}
+
+function usePlayerVehicle(type) {
+  if (player.type === type) return;
+  scene.remove(player.mesh);
+  player.setVehicle(type);
+  scene.add(player.mesh);
+  applyCameraMode();
 }
 
 // ---------- Input ----------
@@ -227,16 +262,20 @@ const keys = new Set();
 const touch = { left: false, right: false, gas: false, brake: false };
 
 window.addEventListener('keydown', (e) => {
+  sound.unlock();
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
   keys.add(e.code);
   if (e.repeat) return;
-  if (e.code === 'KeyC') toggleCamera();
-  if (e.code === 'KeyR' && state.mode === 'playing') startLevel(state.levelIndex);
+  if (e.code === 'KeyC') cycleCamera();
+  if (e.code === 'KeyM') toggleMute();
+  if (e.code === 'KeyH' && state.mode === 'playing') sound.horn();
+  if (e.code === 'KeyR' && state.mode !== 'menu') startLevel(state.levelIndex);
   if (e.code === 'Escape') showMenu();
   if (e.code === 'Enter' && state.mode === 'complete') nextLevel();
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
+window.addEventListener('pointerdown', () => sound.unlock());
 
 function readInput() {
   const left = keys.has('KeyA') || keys.has('ArrowLeft') || touch.left;
@@ -269,6 +308,7 @@ const hud = {
   level: $('hud-level'),
   time: $('hud-time'),
   par: $('hud-par'),
+  parLabel: $('hud-par-label'),
   hits: $('hud-hits'),
   speed: $('hud-speed'),
   gear: $('hud-gear'),
@@ -277,15 +317,43 @@ const hud = {
   front: $('sensor-front'),
   rear: $('sensor-rear'),
   toast: $('toast'),
+  mute: $('btn-mute'),
 };
 const overlay = $('overlay');
 
-$('btn-camera').addEventListener('click', toggleCamera);
+$('btn-camera').addEventListener('click', cycleCamera);
 $('btn-restart').addEventListener('click', () => startLevel(state.levelIndex));
 $('btn-menu').addEventListener('click', showMenu);
+$('btn-horn').addEventListener('click', () => sound.horn());
+hud.mute.addEventListener('click', toggleMute);
 
-function toggleCamera() {
-  state.cameraMode = state.cameraMode === 'chase' ? 'top' : 'chase';
+function toggleMute() {
+  sound.unlock();
+  sound.toggleMute();
+  renderMute();
+}
+
+function renderMute() {
+  hud.mute.textContent = sound.muted ? '🔇' : '🔊';
+  const menuBtn = $('menu-mute');
+  if (menuBtn) menuBtn.textContent = sound.muted ? '🔇 Sound off' : '🔊 Sound on';
+}
+
+function cycleCamera() {
+  const i = CAMERA_MODES.indexOf(state.cameraMode);
+  state.cameraMode = CAMERA_MODES[(i + 1) % CAMERA_MODES.length];
+  applyCameraMode();
+  snapCamera();
+  if (state.mode === 'playing') toast(CAMERA_LABELS[state.cameraMode], 1);
+}
+
+// First person hides the cabin (so we see out over the bonnet) and shows the wheel.
+function applyCameraMode() {
+  const first = state.cameraMode === 'first';
+  const { cabinParts, interior } = player.mesh.userData;
+  for (const p of cabinParts) p.visible = !first;
+  interior.visible = first;
+  resize();
 }
 
 let toastTimer = 0;
@@ -303,6 +371,13 @@ function isUnlocked(i) {
   return i === 0 || (progress[i - 1]?.stars ?? 0) > 0;
 }
 
+function levelTags(lvl) {
+  const tags = [VEHICLES[lvl.vehicle ?? 'sedan'].name];
+  if (lvl.traffic) tags.push('Traffic');
+  if (lvl.timeLimit) tags.push('Timed');
+  return tags.map((t) => `<em>${t}</em>`).join('');
+}
+
 function showMenu() {
   state.mode = 'menu';
   document.body.classList.remove('playing');
@@ -312,6 +387,7 @@ function showMenu() {
     return `<button class="level-card" data-level="${i}" ${locked ? 'disabled' : ''}>
       <span class="num">${i + 1}</span>
       <span class="name">${lvl.name}</span>
+      <span class="tags">${levelTags(lvl)}</span>
       <span class="stars">${locked ? '🔒' : stars(best?.stars ?? 0)}</span>
       ${best ? `<span class="best">Best ${best.time.toFixed(1)}s</span>` : ''}
     </button>`;
@@ -322,14 +398,17 @@ function showMenu() {
     <div class="levels">${cards}</div>
     <div class="controls-help">
       <div><kbd>W</kbd><kbd>S</kbd> / <kbd>↑</kbd><kbd>↓</kbd> drive · brake · reverse</div>
-      <div><kbd>A</kbd><kbd>D</kbd> / <kbd>←</kbd><kbd>→</kbd> steer</div>
-      <div><kbd>Space</kbd> handbrake · <kbd>C</kbd> camera · <kbd>R</kbd> restart · <kbd>Esc</kbd> menu</div>
+      <div><kbd>A</kbd><kbd>D</kbd> / <kbd>←</kbd><kbd>→</kbd> steer · <kbd>Space</kbd> handbrake · <kbd>H</kbd> horn</div>
+      <div><kbd>C</kbd> camera (chase / top / first person) · <kbd>M</kbd> mute · <kbd>R</kbd> restart · <kbd>Esc</kbd> menu</div>
     </div>
+    <button id="menu-mute" class="link-btn"></button>
   </div>`;
   overlay.classList.add('show');
   overlay.querySelectorAll('[data-level]').forEach((b) =>
     b.addEventListener('click', () => startLevel(Number(b.dataset.level))),
   );
+  $('menu-mute').addEventListener('click', toggleMute);
+  renderMute();
 }
 
 function startLevel(i) {
@@ -340,13 +419,15 @@ function startLevel(i) {
   state.hits = 0;
   state.hitCooldown = 0;
   state.hold = 0;
+  usePlayerVehicle(level.vehicle ?? 'sedan');
   buildLevel(level);
   player.reset(level.start.x, level.start.z, level.start.heading);
   snapCamera();
   overlay.classList.remove('show');
   document.body.classList.add('playing');
   hud.level.textContent = `${i + 1}. ${level.name}`;
-  hud.par.textContent = `${level.par}s`;
+  hud.parLabel.textContent = level.timeLimit ? 'Left' : 'Par';
+  hud.par.textContent = `${level.timeLimit ?? level.par}s`;
   toast(level.hint, 4);
 }
 
@@ -355,9 +436,15 @@ function nextLevel() {
   else showMenu();
 }
 
+function showResult(html) {
+  overlay.innerHTML = `<div class="card">${html}</div>`;
+  overlay.classList.add('show');
+}
+
 function completeLevel() {
-  const level = LEVELS[state.levelIndex];
+  const level = currentLevel();
   state.mode = 'complete';
+  sound.success();
   let earned = 3;
   if (state.time > level.par) earned--;
   if (state.hits > 0) earned--;
@@ -372,7 +459,7 @@ function completeLevel() {
   }
 
   const last = state.levelIndex + 1 >= LEVELS.length;
-  overlay.innerHTML = `<div class="card">
+  showResult(`
     <h2>${last ? 'All levels parked!' : 'Parked!'}</h2>
     <div class="big-stars">${stars(earned)}</div>
     <div class="results">
@@ -383,19 +470,34 @@ function completeLevel() {
     <div class="actions">
       <button id="ov-retry" class="secondary">Retry</button>
       <button id="ov-next">${last ? 'Menu' : 'Next level'}</button>
-    </div>
-  </div>`;
-  overlay.classList.add('show');
+    </div>`);
   $('ov-retry').addEventListener('click', () => startLevel(state.levelIndex));
   $('ov-next').addEventListener('click', nextLevel);
 }
 
+function failLevel(reason) {
+  state.mode = 'failed';
+  sound.fail();
+  showResult(`
+    <h2>${reason}</h2>
+    <p class="sub">The clock beat you this time.</p>
+    <div class="actions">
+      <button id="ov-menu" class="secondary">Menu</button>
+      <button id="ov-retry">Try again</button>
+    </div>`);
+  $('ov-retry').addEventListener('click', () => startLevel(state.levelIndex));
+  $('ov-menu').addEventListener('click', showMenu);
+}
+
 // ---------- Simulation ----------
+function nearby(o, b) {
+  const r = o.hw + o.hl + b.hw + b.hl;
+  return Math.abs(o.x - b.x) < r && Math.abs(o.z - b.z) < r;
+}
+
 function collides(b) {
-  for (const o of obstacles) {
-    if (Math.abs(o.x - b.x) > o.hw + o.hl + 3 && Math.abs(o.z - b.z) > o.hw + o.hl + 3) continue;
-    if (obbIntersects(b, o)) return true;
-  }
+  for (const o of obstacles) if (nearby(o, b) && obbIntersects(b, o)) return true;
+  for (const t of traffic) if (obbIntersects(b, t.box)) return true;
   return false;
 }
 
@@ -403,21 +505,20 @@ function collides(b) {
 function sensorDistance(end) {
   const b = player.box;
   const a = axes(b);
-  const l = CAR.hl * end;
+  const l = b.hl * end;
   const points = [-1, 0, 1].map((w) => ({
-    x: b.x + a.fx * l + a.rx * CAR.hw * w,
-    z: b.z + a.fz * l + a.rz * CAR.hw * w,
+    x: b.x + a.fx * l + a.rx * b.hw * w,
+    z: b.z + a.fz * l + a.rz * b.hw * w,
   }));
   let min = Infinity;
-  for (const o of obstacles) {
+  for (const o of [...obstacles, ...traffic.map((t) => t.box)]) {
     for (const p of points) min = Math.min(min, pointObbDistance(o, p.x, p.z));
   }
   return min;
 }
 
 function renderSensor(el, dist) {
-  const level = dist < 0.35 ? 4 : dist < 0.8 ? 3 : dist < 1.4 ? 2 : dist < 2.2 ? 1 : 0;
-  el.dataset.level = level;
+  el.dataset.level = dist < 0.35 ? 4 : dist < 0.8 ? 3 : dist < 1.4 ? 2 : dist < 2.2 ? 1 : 0;
 }
 
 function update(dt) {
@@ -425,12 +526,24 @@ function update(dt) {
     toastTimer -= dt;
     if (toastTimer <= 0) hud.toast.classList.remove('show');
   }
-  if (state.mode !== 'playing') {
+
+  const playing = state.mode === 'playing';
+  // Traffic keeps moving behind the menus so the scene feels alive.
+  for (const t of traffic) {
+    if (t.update(dt, player.box, traffic) && playing) {
+      sound.horn();
+      toast('Honk! You\'re blocking traffic', 1.2);
+    }
+  }
+
+  if (!playing) {
     player.braking = false;
     player.syncMesh();
+    sound.updateEngine(false, 0, 0);
     return;
   }
 
+  const level = currentLevel();
   state.time += dt;
   state.hitCooldown -= dt;
   const input = readInput();
@@ -443,17 +556,19 @@ function update(dt) {
       state.hits++;
       state.hitCooldown = 0.6;
       state.shake = Math.min(0.4, impact * 0.08);
+      sound.crash(impact);
       toast(impact > 3 ? 'Crunch! 💥' : 'Bump!', 0.9);
     }
   }
   player.syncMesh();
+  sound.updateEngine(true, Math.abs(player.speed) / player.spec.maxFwd, player.throttle, player.spec.engine);
 
   // Parking check.
-  const level = LEVELS[state.levelIndex];
   const t = level.target;
   const inside = cornersInside(player.box, t);
   const diff = Math.abs(angleDiff(player.heading, t.heading));
-  const aligned = t.dir === 'forward' ? diff < ALIGN_TOLERANCE : Math.min(diff, Math.PI - diff) < ALIGN_TOLERANCE;
+  const eitherWay = Math.min(diff, Math.PI - diff) < ALIGN_TOLERANCE;
+  const aligned = t.dir === 'forward' ? diff < ALIGN_TOLERANCE : eitherWay;
   const stopped = Math.abs(player.speed) < STOP_SPEED;
 
   if (inside && aligned && stopped) state.hold += dt;
@@ -465,41 +580,61 @@ function update(dt) {
 
   let status = '';
   if (inside && aligned) status = stopped ? 'Hold still…' : 'Now stop!';
-  else if (inside && t.dir === 'forward' && Math.min(diff, Math.PI - diff) < ALIGN_TOLERANCE) status = 'Wrong way round — follow the arrow';
+  else if (inside && eitherWay) status = 'Wrong way round — follow the arrow';
   else if (inside) status = 'Straighten up';
   else if (obbIntersects(player.box, t)) status = 'Get fully inside the bay';
   hud.status.textContent = status;
   hud.progress.style.width = `${Math.min(state.hold / HOLD_TIME, 1) * 100}%`;
 
-  if (state.hold >= HOLD_TIME) completeLevel();
-
+  if (level.timeLimit) {
+    const left = Math.max(0, level.timeLimit - state.time);
+    hud.par.textContent = `${left.toFixed(1)}s`;
+    hud.par.classList.toggle('over', left < 10);
+  }
   hud.time.textContent = `${state.time.toFixed(1)}s`;
   hud.time.classList.toggle('over', state.time > level.par);
   hud.hits.textContent = state.hits;
   hud.speed.textContent = Math.round(Math.abs(player.speed) * 3.6);
   hud.gear.textContent = player.gear;
   hud.gear.classList.toggle('reverse', player.gear === 'R');
-  renderSensor(hud.front, sensorDistance(1));
-  renderSensor(hud.rear, sensorDistance(-1));
+  const front = sensorDistance(1);
+  const rear = sensorDistance(-1);
+  renderSensor(hud.front, front);
+  renderSensor(hud.rear, rear);
+  sound.updateSensor(dt, Math.abs(player.speed) > 0.05 || player.throttle ? (player.gear === 'R' ? rear : front) : 9);
+
+  if (state.hold >= HOLD_TIME) completeLevel();
+  else if (level.timeLimit && state.time >= level.timeLimit) failLevel('Out of time!');
 }
 
 // ---------- Camera ----------
 const camTarget = new THREE.Vector3();
 const camLook = new THREE.Vector3();
+const smoothLook = new THREE.Vector3();
 
 function desiredCamera() {
   const sx = Math.sin(player.heading);
   const sz = Math.cos(player.heading);
+  const spec = player.spec;
+  if (state.cameraMode === 'first') {
+    // Seat position in vehicle space: x is towards the driver's (left) side.
+    const [lx, ly, lz] = spec.seat;
+    camTarget.set(player.x + sz * lx + sx * lz, ly, player.z - sx * lx + sz * lz);
+    camLook.set(camTarget.x + sx * 10, ly - 1.1, camTarget.z + sz * 10);
+    return;
+  }
   if (state.cameraMode === 'top') {
-    camTarget.set(player.x, 30, player.z - 4);
+    camTarget.set(player.x, 26 + spec.hl * 2, player.z - 4);
     camLook.set(player.x, 0, player.z);
   } else {
-    camTarget.set(player.x - sx * 8.5, 4.6, player.z - sz * 8.5);
-    camLook.set(player.x + sx * 2.5, 0.8, player.z + sz * 2.5);
+    const back = spec.chase?.back ?? 6.4 + spec.hl;
+    const ahead = spec.hl + 0.4;
+    camTarget.set(player.x - sx * back, spec.chase?.height ?? 3.4 + spec.hl * 0.6, player.z - sz * back);
+    camLook.set(player.x + sx * ahead, 0.8, player.z + sz * ahead);
   }
   // Keep the camera inside the lot so tall walls never block the view.
-  // When clamped, lift the camera so it still looks over the car.
-  const { w, d } = LEVELS[state.levelIndex].lot;
+  // When clamped, lift the camera so it still looks over the vehicle.
+  const { w, d } = currentLevel().lot;
   const cx = THREE.MathUtils.clamp(camTarget.x, -w / 2 + 0.6, w / 2 - 0.6);
   const cz = THREE.MathUtils.clamp(camTarget.z, -d / 2 + 0.6, d / 2 - 0.6);
   camTarget.y += Math.hypot(cx - camTarget.x, cz - camTarget.z) * 0.6;
@@ -510,15 +645,19 @@ function desiredCamera() {
 function snapCamera() {
   desiredCamera();
   camera.position.copy(camTarget);
+  smoothLook.copy(camLook);
   camera.lookAt(camLook);
 }
 
-const smoothLook = new THREE.Vector3();
 function updateCamera(dt) {
   desiredCamera();
-  const k = 1 - Math.exp(-dt * 4);
-  camera.position.lerp(camTarget, k);
-  smoothLook.lerp(camLook, 1 - Math.exp(-dt * 8));
+  if (state.cameraMode === 'first') {
+    camera.position.copy(camTarget);
+    smoothLook.copy(camLook);
+  } else {
+    camera.position.lerp(camTarget, 1 - Math.exp(-dt * 4));
+    smoothLook.lerp(camLook, 1 - Math.exp(-dt * 8));
+  }
   camera.lookAt(smoothLook);
   if (state.shake > 0) {
     camera.position.x += (Math.random() - 0.5) * state.shake;
@@ -537,7 +676,8 @@ function resize() {
   const h = window.innerHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
-  camera.fov = w < h ? 75 : 60;
+  const fov = state.cameraMode === 'first' ? 70 : 60;
+  camera.fov = w < h ? fov + 15 : fov;
   camera.updateProjectionMatrix();
 }
 window.addEventListener('resize', resize);
@@ -557,9 +697,8 @@ function frame(now) {
 buildLevel(LEVELS[0]);
 player.reset(LEVELS[0].start.x, LEVELS[0].start.z, LEVELS[0].start.heading);
 snapCamera();
-smoothLook.copy(camLook);
 showMenu();
 requestAnimationFrame(frame);
 
 // Exposed for debugging and automated tests.
-window.__game = { state, player, LEVELS, startLevel, collides, cornersInside };
+window.__game = { state, player, LEVELS, startLevel, collides, cornersInside, traffic: () => traffic, sound };
