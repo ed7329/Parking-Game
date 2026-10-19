@@ -21,7 +21,8 @@ python3 -m http.server 8000
 | Steer | `A` `D` / `←` `→` | ◀ ▶ |
 | Handbrake | `Space` | — |
 | Horn | `H` | 📯 |
-| Camera: chase / top-down / first person | `C` | 🎥 |
+| First person on/off (with rear backup camera) | `V` | 👁 |
+| Cycle cameras: chase / top-down / first person | `C` | 🎥 |
 | Mute | `M` | 🔊 |
 | Restart level | `R` | ↻ |
 | Menu | `Esc` | ☰ |
@@ -42,6 +43,15 @@ clock runs out. Progress is saved in your browser.
 8. **Loading Dock**: reverse a box truck into a dock.
 9. **Beat the Clock**: weave through barriers before time runs out.
 10. **City Street**: timed parallel parking with traffic in both directions.
+11. **Angle Parking**: nose-in angled bays in a pickup truck.
+12. **Van Delivery**: parallel park a delivery van on a busy street.
+13. **Bus Depot**: line up a 12-metre city bus between other buses.
+14. **Night Shift**: park in the dark with headlights and street lamps.
+15. **Roundabout**: cross circling traffic, then park a taxi, against the clock.
+16. **Ambulance Bay**: reverse an ambulance between bollards with traffic passing.
+
+**Free Drive** (from the menu): pick any of the 10 vehicles (sedan, hatchback, SUV, pickup,
+delivery van, taxi, police car, ambulance, box truck, city bus) and explore a big lot with traffic.
 
 Traffic stops for you (and honks if you block it for too long), but bumping into it counts as a hit.
 All sounds (engine, crashes, parking-sensor beeps, horn) are synthesised live with the Web Audio API,
@@ -64,7 +74,7 @@ Any static host works too (Netlify, Vercel, Cloudflare Pages): point it at the r
 - `index.html`, `style.css`: page, HUD, menus, touch controls
 - `src/main.js`: scene, level building, game loop, camera, HUD and input
 - `src/car.js`: player vehicle physics (kinematic bicycle model)
-- `src/vehicles.js`: vehicle specs (sedan, hatchback, SUV, box truck) and their 3D models
+- `src/vehicles.js`: vehicle specs and 3D models (cars, SUV, pickup, van, truck, bus and liveried variants)
 - `src/traffic.js`: AI traffic that follows spline paths
 - `src/audio.js`: synthesised engine, crash, sensor and horn sounds
 - `src/collision.js`: 2D oriented-box collision (separating axis test)

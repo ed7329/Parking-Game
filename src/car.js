@@ -17,7 +17,7 @@ export class Car {
   setVehicle(type, color = 0xe63946) {
     this.type = type;
     this.spec = VEHICLES[type];
-    this.mesh = buildVehicleMesh(type, color, true);
+    this.mesh = buildVehicleMesh(type, this.spec.playerColor ?? color, true);
     this.reset(0, 0, 0);
   }
 

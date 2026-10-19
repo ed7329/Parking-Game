@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { LEVELS } from './levels.js';
+import { LEVELS, FREE_DRIVE } from './levels.js';
 import { Car } from './car.js';
-import { VEHICLES, buildVehicleMesh } from './vehicles.js';
+import { VEHICLES, buildVehicleMesh, animateVehicleLights } from './vehicles.js';
 import { TrafficCar } from './traffic.js';
 import { Sound } from './audio.js';
 import { obbIntersects, pointObbDistance, cornersInside, angleDiff, axes } from './collision.js';
@@ -12,6 +12,10 @@ const STOP_SPEED = 0.25;
 const HOLD_TIME = 1.0;
 const CAMERA_MODES = ['chase', 'top', 'first'];
 const CAMERA_LABELS = { chase: 'Chase camera', top: 'Top-down camera', first: 'First-person camera' };
+const PLAYABLE = ['sedan', 'hatch', 'suv', 'pickup', 'van', 'taxi', 'police', 'ambulance', 'truck', 'bus'];
+const VEHICLE_ICONS = {
+  sedan: '🚗', hatch: '🚙', suv: '🚙', pickup: '🛻', van: '🚐', taxi: '🚕', police: '🚓', ambulance: '🚑', truck: '🚚', bus: '🚌',
+};
 
 // ---------- Renderer & scene ----------
 const canvas = document.getElementById('game');
@@ -32,8 +36,16 @@ sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -32, right: 32, top: 32, bottom: -32, near: 1, far: 90 });
 scene.add(sun);
 
+// Backup camera shown as an inset while in first-person view.
+const rearCamera = new THREE.PerspectiveCamera(70, 2.4, 0.1, 120);
+
+// Headlights, only switched on for night levels. Re-attached when the vehicle changes.
+const headlights = new THREE.SpotLight(0xfff3d6, 0, 45, 0.6, 0.55, 1.2);
+headlights.target = new THREE.Object3D();
+
 const player = new Car();
 scene.add(player.mesh);
+attachHeadlights();
 const sound = new Sound();
 
 let levelGroup = null;
@@ -50,8 +62,29 @@ const state = {
   hitCooldown: 0,
   hold: 0,
   shake: 0,
-  cameraMode: 'chase',
+  cameraMode: loadCameraMode(),
+  lastOutsideCamera: 'chase',
+  level: LEVELS[0],
+  free: false,
 };
+
+function loadCameraMode() {
+  try {
+    return CAMERA_MODES.includes(localStorage.getItem('parking-game-camera'))
+      ? localStorage.getItem('parking-game-camera')
+      : 'chase';
+  } catch {
+    return 'chase';
+  }
+}
+
+function saveCameraMode() {
+  try {
+    localStorage.setItem('parking-game-camera', state.cameraMode);
+  } catch {
+    // Preference just won't persist.
+  }
+}
 
 const storage = {
   load() {
@@ -71,7 +104,7 @@ const storage = {
 };
 let progress = storage.load();
 
-const currentLevel = () => LEVELS[state.levelIndex];
+const currentLevel = () => state.level;
 
 // ---------- Level building ----------
 function box(w, h, d, color, opts = {}) {
@@ -153,9 +186,22 @@ function buildLevel(level) {
   scene.add(levelGroup);
 
   const { w, d } = level.lot;
-  scene.background = new THREE.Color(level.indoor ? 0x2b2e33 : 0x9fd3ff);
-  scene.fog = new THREE.Fog(scene.background, 45, level.indoor ? 90 : 160);
-  hemi.intensity = level.indoor ? 0.65 : 0.9;
+  scene.background = new THREE.Color(level.night ? 0x0b1020 : level.indoor ? 0x2b2e33 : 0x9fd3ff);
+  scene.fog = new THREE.Fog(scene.background, level.night ? 25 : 45, level.night ? 90 : level.indoor ? 90 : 160);
+  hemi.intensity = level.night ? 0.12 : level.indoor ? 0.65 : 0.9;
+  sun.intensity = level.night ? 0.15 : 1.6;
+  headlights.intensity = level.night ? 120 : 0;
+
+  for (const lamp of level.lamps ?? []) {
+    const light = new THREE.PointLight(0xffd59a, 250, 28, 1.6);
+    light.position.set(lamp.x, 5.6, lamp.z);
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.3, 12, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffe6b0 }),
+    );
+    bulb.position.copy(light.position);
+    levelGroup.add(light, bulb);
+  }
 
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(400, 400),
@@ -220,6 +266,7 @@ function buildLevel(level) {
 
   // Target bay: a glowing pad plus an arrow when direction matters.
   const t = level.target;
+  if (!t) return;
   targetMarker = groundStrip(levelGroup, t.x, t.z, t.heading, t.hw * 2, t.hl * 2, 0xffd400, 0.015);
   targetMarker.material.dispose();
   targetMarker.material = new THREE.MeshBasicMaterial({ color: 0xffd400, transparent: true, opacity: 0.35, depthWrite: false });
@@ -254,7 +301,15 @@ function usePlayerVehicle(type) {
   scene.remove(player.mesh);
   player.setVehicle(type);
   scene.add(player.mesh);
+  attachHeadlights();
   applyCameraMode();
+}
+
+function attachHeadlights() {
+  const { hl } = player.spec;
+  headlights.position.set(0, 0.7, hl + 0.4);
+  headlights.target.position.set(0, 0, hl + 14);
+  player.mesh.add(headlights, headlights.target);
 }
 
 // ---------- Input ----------
@@ -267,9 +322,10 @@ window.addEventListener('keydown', (e) => {
   keys.add(e.code);
   if (e.repeat) return;
   if (e.code === 'KeyC') cycleCamera();
+  if (e.code === 'KeyV') toggleFirstPerson();
   if (e.code === 'KeyM') toggleMute();
   if (e.code === 'KeyH' && state.mode === 'playing') sound.horn();
-  if (e.code === 'KeyR' && state.mode !== 'menu') startLevel(state.levelIndex);
+  if (e.code === 'KeyR' && state.mode !== 'menu') restart();
   if (e.code === 'Escape') showMenu();
   if (e.code === 'Enter' && state.mode === 'complete') nextLevel();
 });
@@ -322,7 +378,8 @@ const hud = {
 const overlay = $('overlay');
 
 $('btn-camera').addEventListener('click', cycleCamera);
-$('btn-restart').addEventListener('click', () => startLevel(state.levelIndex));
+$('btn-fp').addEventListener('click', toggleFirstPerson);
+$('btn-restart').addEventListener('click', restart);
 $('btn-menu').addEventListener('click', showMenu);
 $('btn-horn').addEventListener('click', () => sound.horn());
 hud.mute.addEventListener('click', toggleMute);
@@ -339,12 +396,23 @@ function renderMute() {
   if (menuBtn) menuBtn.textContent = sound.muted ? '🔇 Sound off' : '🔊 Sound on';
 }
 
-function cycleCamera() {
-  const i = CAMERA_MODES.indexOf(state.cameraMode);
-  state.cameraMode = CAMERA_MODES[(i + 1) % CAMERA_MODES.length];
+function setCamera(mode) {
+  if (state.cameraMode !== 'first') state.lastOutsideCamera = state.cameraMode;
+  state.cameraMode = mode;
+  saveCameraMode();
   applyCameraMode();
   snapCamera();
-  if (state.mode === 'playing') toast(CAMERA_LABELS[state.cameraMode], 1);
+  if (state.mode === 'playing') toast(CAMERA_LABELS[mode], 1);
+}
+
+function cycleCamera() {
+  const i = CAMERA_MODES.indexOf(state.cameraMode);
+  setCamera(CAMERA_MODES[(i + 1) % CAMERA_MODES.length]);
+}
+
+// Jumps straight in and out of the driver's seat.
+function toggleFirstPerson() {
+  setCamera(state.cameraMode === 'first' ? state.lastOutsideCamera : 'first');
 }
 
 // First person hides the cabin (so we see out over the bonnet) and shows the wheel.
@@ -353,6 +421,8 @@ function applyCameraMode() {
   const { cabinParts, interior } = player.mesh.userData;
   for (const p of cabinParts) p.visible = !first;
   interior.visible = first;
+  document.body.classList.toggle('first-person', first);
+  $('btn-fp').classList.toggle('on', first);
   resize();
 }
 
@@ -375,6 +445,7 @@ function levelTags(lvl) {
   const tags = [VEHICLES[lvl.vehicle ?? 'sedan'].name];
   if (lvl.traffic) tags.push('Traffic');
   if (lvl.timeLimit) tags.push('Timed');
+  if (lvl.night) tags.push('Night');
   return tags.map((t) => `<em>${t}</em>`).join('');
 }
 
@@ -396,10 +467,14 @@ function showMenu() {
     <h1>Park It!</h1>
     <p class="sub">Steer into the glowing bay, line up, and come to a stop.</p>
     <div class="levels">${cards}</div>
+    <h3>Free Drive</h3>
+    <p class="sub small">Pick any vehicle and explore a big lot with traffic. No clock, no score.</p>
+    <div class="garage">${PLAYABLE.map((type) => `<button class="vehicle-btn" data-vehicle="${type}">
+      <span>${VEHICLE_ICONS[type]}</span>${VEHICLES[type].name}</button>`).join('')}</div>
     <div class="controls-help">
       <div><kbd>W</kbd><kbd>S</kbd> / <kbd>↑</kbd><kbd>↓</kbd> drive · brake · reverse</div>
       <div><kbd>A</kbd><kbd>D</kbd> / <kbd>←</kbd><kbd>→</kbd> steer · <kbd>Space</kbd> handbrake · <kbd>H</kbd> horn</div>
-      <div><kbd>C</kbd> camera (chase / top / first person) · <kbd>M</kbd> mute · <kbd>R</kbd> restart · <kbd>Esc</kbd> menu</div>
+      <div><kbd>V</kbd> first person on/off · <kbd>C</kbd> cycle cameras · <kbd>M</kbd> mute · <kbd>R</kbd> restart · <kbd>Esc</kbd> menu</div>
     </div>
     <button id="menu-mute" class="link-btn"></button>
   </div>`;
@@ -407,27 +482,52 @@ function showMenu() {
   overlay.querySelectorAll('[data-level]').forEach((b) =>
     b.addEventListener('click', () => startLevel(Number(b.dataset.level))),
   );
+  overlay.querySelectorAll('[data-vehicle]').forEach((b) =>
+    b.addEventListener('click', () => startFreeDrive(b.dataset.vehicle)),
+  );
   $('menu-mute').addEventListener('click', toggleMute);
   renderMute();
+}
+
+function restart() {
+  if (state.free) startFreeDrive(player.type);
+  else startLevel(state.levelIndex);
+}
+
+function startFreeDrive(type) {
+  state.free = true;
+  beginLevel(FREE_DRIVE, type);
+  hud.level.textContent = `Free Drive · ${VEHICLES[type].name}`;
+  hud.parLabel.textContent = 'Mode';
+  hud.par.textContent = 'Free';
 }
 
 function startLevel(i) {
   const level = LEVELS[i];
   state.levelIndex = i;
+  state.free = false;
+  beginLevel(level, level.vehicle ?? 'sedan');
+  hud.level.textContent = `${i + 1}. ${level.name}`;
+  hud.parLabel.textContent = level.timeLimit ? 'Left' : 'Par';
+  hud.par.textContent = `${level.timeLimit ?? level.par}s`;
+}
+
+function beginLevel(level, vehicle) {
+  state.level = level;
   state.mode = 'playing';
   state.time = 0;
   state.hits = 0;
   state.hitCooldown = 0;
   state.hold = 0;
-  usePlayerVehicle(level.vehicle ?? 'sedan');
+  usePlayerVehicle(vehicle);
   buildLevel(level);
   player.reset(level.start.x, level.start.z, level.start.heading);
+  hud.par.classList.remove('over');
+  hud.status.textContent = '';
+  hud.progress.style.width = '0%';
   snapCamera();
   overlay.classList.remove('show');
   document.body.classList.add('playing');
-  hud.level.textContent = `${i + 1}. ${level.name}`;
-  hud.parLabel.textContent = level.timeLimit ? 'Left' : 'Par';
-  hud.par.textContent = `${level.timeLimit ?? level.par}s`;
   toast(level.hint, 4);
 }
 
@@ -563,28 +663,30 @@ function update(dt) {
   player.syncMesh();
   sound.updateEngine(true, Math.abs(player.speed) / player.spec.maxFwd, player.throttle, player.spec.engine);
 
-  // Parking check.
-  const t = level.target;
-  const inside = cornersInside(player.box, t);
-  const diff = Math.abs(angleDiff(player.heading, t.heading));
-  const eitherWay = Math.min(diff, Math.PI - diff) < ALIGN_TOLERANCE;
-  const aligned = t.dir === 'forward' ? diff < ALIGN_TOLERANCE : eitherWay;
-  const stopped = Math.abs(player.speed) < STOP_SPEED;
+  if (!level.free) {
+    // Parking check.
+    const t = level.target;
+    const inside = cornersInside(player.box, t);
+    const diff = Math.abs(angleDiff(player.heading, t.heading));
+    const eitherWay = Math.min(diff, Math.PI - diff) < ALIGN_TOLERANCE;
+    const aligned = t.dir === 'forward' ? diff < ALIGN_TOLERANCE : eitherWay;
+    const stopped = Math.abs(player.speed) < STOP_SPEED;
 
-  if (inside && aligned && stopped) state.hold += dt;
-  else state.hold = 0;
+    if (inside && aligned && stopped) state.hold += dt;
+    else state.hold = 0;
 
-  const color = inside && aligned ? 0x2bd96b : inside ? 0xff9f1c : 0xffd400;
-  targetMarker.material.color.setHex(color);
-  targetMarker.material.opacity = 0.3 + Math.sin(state.time * 4) * 0.08;
+    const color = inside && aligned ? 0x2bd96b : inside ? 0xff9f1c : 0xffd400;
+    targetMarker.material.color.setHex(color);
+    targetMarker.material.opacity = 0.3 + Math.sin(state.time * 4) * 0.08;
 
-  let status = '';
-  if (inside && aligned) status = stopped ? 'Hold still…' : 'Now stop!';
-  else if (inside && eitherWay) status = 'Wrong way round — follow the arrow';
-  else if (inside) status = 'Straighten up';
-  else if (obbIntersects(player.box, t)) status = 'Get fully inside the bay';
-  hud.status.textContent = status;
-  hud.progress.style.width = `${Math.min(state.hold / HOLD_TIME, 1) * 100}%`;
+    let status = '';
+    if (inside && aligned) status = stopped ? 'Hold still…' : 'Now stop!';
+    else if (inside && eitherWay) status = 'Wrong way round — follow the arrow';
+    else if (inside) status = 'Straighten up';
+    else if (obbIntersects(player.box, t)) status = 'Get fully inside the bay';
+    hud.status.textContent = status;
+    hud.progress.style.width = `${Math.min(state.hold / HOLD_TIME, 1) * 100}%`;
+  }
 
   if (level.timeLimit) {
     const left = Math.max(0, level.timeLimit - state.time);
@@ -592,7 +694,7 @@ function update(dt) {
     hud.par.classList.toggle('over', left < 10);
   }
   hud.time.textContent = `${state.time.toFixed(1)}s`;
-  hud.time.classList.toggle('over', state.time > level.par);
+  hud.time.classList.toggle('over', !level.free && state.time > level.par);
   hud.hits.textContent = state.hits;
   hud.speed.textContent = Math.round(Math.abs(player.speed) * 3.6);
   hud.gear.textContent = player.gear;
@@ -670,6 +772,26 @@ function updateCamera(dt) {
   sun.target.updateMatrixWorld();
 }
 
+// Backup camera: mounted above the rear bumper, looking back and down.
+const rearView = $('rearview');
+function renderRearCamera() {
+  const { hl } = player.spec;
+  const sx = Math.sin(player.heading);
+  const sz = Math.cos(player.heading);
+  rearCamera.position.set(player.x - sx * (hl + 0.1), 1.6, player.z - sz * (hl + 0.1));
+  rearCamera.lookAt(player.x - sx * (hl + 7), 0, player.z - sz * (hl + 7));
+  const r = rearView.getBoundingClientRect();
+  const y = window.innerHeight - r.bottom;
+  rearCamera.aspect = r.width / r.height;
+  rearCamera.updateProjectionMatrix();
+  renderer.setScissorTest(true);
+  renderer.setViewport(r.left, y, r.width, r.height);
+  renderer.setScissor(r.left, y, r.width, r.height);
+  renderer.render(scene, rearCamera);
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
+}
+
 // ---------- Main loop ----------
 function resize() {
   const w = window.innerWidth;
@@ -689,16 +811,19 @@ function frame(now) {
   last = now;
   update(dt);
   updateCamera(dt);
+  animateVehicleLights(now / 1000);
   renderer.render(scene, camera);
+  if (state.cameraMode === 'first' && state.mode === 'playing') renderRearCamera();
   requestAnimationFrame(frame);
 }
 
 // Show the first level behind the menu so the title screen isn't empty.
 buildLevel(LEVELS[0]);
 player.reset(LEVELS[0].start.x, LEVELS[0].start.z, LEVELS[0].start.heading);
+applyCameraMode();
 snapCamera();
 showMenu();
 requestAnimationFrame(frame);
 
 // Exposed for debugging and automated tests.
-window.__game = { state, player, LEVELS, startLevel, collides, cornersInside, traffic: () => traffic, sound };
+window.__game = { state, player, LEVELS, startLevel, startFreeDrive, collides, cornersInside, traffic: () => traffic, sound };

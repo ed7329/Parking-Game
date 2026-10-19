@@ -37,7 +37,42 @@ export const VEHICLES = {
     glassWidth: 2.2, seat: [0.55, 2.1, 2.55], engine: 0.6, chase: { back: 12, height: 7.5 },
     cargo: { z0: -3.6, z1: 1.7, y0: 1.15, y1: 3.3, color: 0xf2f2ee },
   },
+  pickup: {
+    name: 'Pickup Truck',
+    hw: 1.0, hl: 2.75, axles: [1.75, -1.65], wheelRadius: 0.42, bottom: 0.4,
+    maxSteer: 0.56, steerRate: 2.1, accel: 4.6, reverseAccel: 3.2, brake: 10, maxFwd: 9.5, maxRev: 4,
+    profile: [[2.75, 0.4], [2.78, 1.0], [2.6, 1.15], [1.2, 1.22], [-2.75, 1.22], [-2.75, 0.4]],
+    glass: [[1.2, 1.22], [0.6, 1.85], [-0.3, 1.85], [-0.4, 1.22]],
+    glassWidth: 1.8, seat: [0.4, 1.66, 0.25], engine: 0.75, chase: { back: 9.5, height: 5 },
+    bed: { z0: -2.65, z1: -0.5 },
+  },
+  van: {
+    name: 'Delivery Van',
+    hw: 1.05, hl: 2.7, axles: [1.75, -1.6], wheelRadius: 0.4, bottom: 0.38,
+    maxSteer: 0.58, steerRate: 2.1, accel: 4, reverseAccel: 3, brake: 10, maxFwd: 9, maxRev: 3.8,
+    profile: [[2.7, 0.38], [2.72, 1.0], [2.55, 1.15], [1.55, 1.25], [-2.7, 1.25], [-2.7, 0.38]],
+    glass: [[1.55, 1.25], [0.95, 2.4], [0.35, 2.4], [0.35, 1.25]],
+    glassWidth: 2.0, seat: [0.45, 1.9, 0.8], engine: 0.8, chase: { back: 10, height: 5.8 },
+    cargo: { z0: -2.7, z1: 0.35, y0: 1.25, y1: 2.47 },
+  },
+  bus: {
+    name: 'City Bus',
+    hw: 1.3, hl: 5.5, axles: [3.6, -2.6], wheelRadius: 0.5, bottom: 0.45,
+    maxSteer: 0.62, steerRate: 1.7, accel: 2.6, reverseAccel: 2, brake: 7, maxFwd: 7.5, maxRev: 3,
+    profile: [[5.5, 0.45], [5.52, 1.3], [-5.5, 1.3], [-5.5, 0.45]],
+    glass: [[5.45, 1.3], [5.3, 2.75], [-5.3, 2.75], [-5.42, 1.3]],
+    glassWidth: 2.56, seat: [0.7, 2.25, 4.7], engine: 0.5, chase: { back: 15, height: 8.5 },
+    steering: { drop: 0.55, ahead: 0.6 },
+    playerColor: 0xf4b400,
+  },
 };
+
+// Liveried variants share a base vehicle's body and handling.
+Object.assign(VEHICLES, {
+  police: { ...VEHICLES.sedan, base: 'sedan', name: 'Police Car', fixedColor: 0xf4f4f4, extra: 'lightbar' },
+  taxi: { ...VEHICLES.sedan, base: 'sedan', name: 'Taxi', fixedColor: 0xf6c000, extra: 'taxi' },
+  ambulance: { ...VEHICLES.van, base: 'van', name: 'Ambulance', fixedColor: 0xfafafa, extra: 'lightbar' },
+});
 
 for (const v of Object.values(VEHICLES)) v.wheelbase = v.axles[0] - v.axles[1];
 
@@ -71,6 +106,7 @@ function extrudeSide(shape, width) {
 
 const geoCache = new Map();
 function geometriesFor(type) {
+  type = VEHICLES[type].base ?? type;
   if (geoCache.has(type)) return geoCache.get(type);
   const spec = VEHICLES[type];
   const glassShape = new THREE.Shape(spec.glass.map(([z, y]) => new THREE.Vector2(z, y)));
@@ -92,6 +128,9 @@ function geometriesFor(type) {
     const c = spec.cargo;
     g.cargo = new THREE.BoxGeometry(spec.hw * 2 - 0.05, c.y1 - c.y0, c.z1 - c.z0);
   }
+  if (spec.bed) {
+    g.bed = new THREE.BoxGeometry(spec.hw * 2 - 0.26, 0.05, spec.bed.z1 - spec.bed.z0);
+  }
   geoCache.set(type, g);
   return g;
 }
@@ -104,7 +143,20 @@ const mat = {
   plate: new THREE.MeshStandardMaterial({ color: 0xf5f5f0, roughness: 0.5 }),
   head: new THREE.MeshStandardMaterial({ color: 0xfff6d8, emissive: 0xfff2c0, emissiveIntensity: 0.6 }),
   tail: new THREE.MeshStandardMaterial({ color: 0x8a0000, emissive: 0x300000 }),
+  sign: new THREE.MeshStandardMaterial({ color: 0xfff3b0, emissive: 0xffd34d, emissiveIntensity: 0.5 }),
+  stripe: new THREE.MeshStandardMaterial({ color: 0xd62828, roughness: 0.5 }),
 };
+
+// Emergency light bars flash in sync; call from the render loop.
+const flash = {
+  red: new THREE.MeshStandardMaterial({ color: 0x990000, emissive: 0xff2020 }),
+  blue: new THREE.MeshStandardMaterial({ color: 0x001a99, emissive: 0x2050ff }),
+};
+export function animateVehicleLights(time) {
+  const on = Math.floor(time * 6) % 2 === 0;
+  flash.red.emissiveIntensity = on ? 2.5 : 0.1;
+  flash.blue.emissiveIntensity = on ? 0.1 : 2.5;
+}
 
 const paintCache = new Map();
 function paint(color) {
@@ -128,7 +180,7 @@ function part(geometry, material, x, y, z) {
 export function buildVehicleMesh(type, color, isPlayer = false) {
   const spec = VEHICLES[type];
   const geo = geometriesFor(type);
-  const p = paint(color);
+  const p = paint(spec.fixedColor ?? color);
   const g = new THREE.Group();
   const cabinParts = [];
 
@@ -140,7 +192,27 @@ export function buildVehicleMesh(type, color, isPlayer = false) {
 
   if (geo.cargo) {
     const c = spec.cargo;
-    g.add(part(geo.cargo, paint(c.color), 0, (c.y0 + c.y1) / 2, (c.z0 + c.z1) / 2));
+    g.add(part(geo.cargo, c.color ? paint(c.color) : p, 0, (c.y0 + c.y1) / 2, (c.z0 + c.z1) / 2));
+  }
+  if (geo.bed) {
+    const b = spec.bed;
+    g.add(part(geo.bed, mat.trim, 0, spec.profile[3][1] - 0.01, (b.z0 + b.z1) / 2));
+  }
+
+  // Liveries: roof light bar or taxi sign, plus a stripe for emergency vehicles.
+  const [, roofY, roofZ] = geo.roofPos;
+  if (spec.extra === 'lightbar') {
+    const top = spec.cargo ? spec.cargo.y1 : roofY + 0.04;
+    const z = spec.cargo ? spec.cargo.z1 - 0.3 : roofZ;
+    g.add(part(new THREE.BoxGeometry(0.5, 0.14, 0.25), flash.red, -0.28, top + 0.07, z));
+    g.add(part(new THREE.BoxGeometry(0.5, 0.14, 0.25), flash.blue, 0.28, top + 0.07, z));
+    const stripeY = spec.cargo ? spec.cargo.y0 + 0.35 : spec.profile[3][1] - 0.15;
+    for (const sx of [-1, 1]) {
+      const stripe = part(new THREE.BoxGeometry(0.02, 0.16, spec.hl * 1.9), mat.stripe, sx * (spec.hw + 0.035), stripeY, 0);
+      g.add(stripe);
+    }
+  } else if (spec.extra === 'taxi') {
+    g.add(part(new THREE.BoxGeometry(0.6, 0.2, 0.3), mat.sign, 0, roofY + 0.14, roofZ));
   }
 
   // Front end: grille, plate, headlights. Rear: plate, tail lights.
@@ -155,7 +227,7 @@ export function buildVehicleMesh(type, color, isPlayer = false) {
   for (const sx of [-1, 1]) {
     g.add(part(geo.light, mat.head, sx * (spec.hw - 0.3), lightY, front + 0.02));
     g.add(part(geo.light, tailMat, sx * (spec.hw - 0.3), spec.cargo ? 0.85 : lightY, rear - 0.02));
-    const mirror = part(geo.mirror, p, sx * (spec.hw + 0.08), spec.glass[0][1] + 0.12, spec.glass[0][0] - 0.15);
+    const mirror = part(geo.mirror, mat.trim, sx * (spec.hw + 0.08), spec.glass[0][1] + 0.12, spec.glass[0][0] - 0.15);
     g.add(mirror);
   }
 
@@ -189,7 +261,8 @@ export function buildVehicleMesh(type, color, isPlayer = false) {
     interior.visible = false;
     const dash = part(new THREE.BoxGeometry(spec.glassWidth, 0.14, 0.7), mat.trim, 0, gy + 0.05, gz - 0.25);
     const steering = new THREE.Group();
-    steering.position.set(sx, sy - 0.32, sz + 0.5);
+    const wheelPos = spec.steering ?? { drop: 0.32, ahead: 0.5 };
+    steering.position.set(sx, sy - wheelPos.drop, sz + wheelPos.ahead);
     steering.rotation.x = -0.5;
     wheelSpin = new THREE.Group();
     wheelSpin.add(

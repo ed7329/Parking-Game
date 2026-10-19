@@ -7,6 +7,7 @@
 //   timeLimit  seconds before the level is failed
 //   traffic    moving vehicles: { type, path: [[x, z], ...], speed, offset, loop }
 //   tunnels    replace the east/west walls with tunnels traffic can drive through
+//   night      dark sky; the player gets headlights and `lamps` light the lot
 
 const PI = Math.PI;
 const SPOT_W = 2.7;
@@ -14,19 +15,19 @@ const SPOT_L = 5.5;
 
 // A row of perpendicular bays. Every bay except the target (and any `empty`
 // indices) gets a parked vehicle, cycling through `types`.
-function row({ z, heading, x0, count, target = -1, empty = [], w = SPOT_W, l = SPOT_L, types = ['sedan', 'hatch'] }) {
+function row({ z, heading, x0, count, target = -1, empty = [], w = SPOT_W, l = SPOT_L, step = w, flip = true, types = ['sedan', 'hatch'] }) {
   const spots = [];
   const parked = [];
   let targetSpot = null;
   for (let i = 0; i < count; i++) {
-    const x = x0 + i * w;
+    const x = x0 + i * step;
     const spot = { x, z, heading, hw: w / 2, hl: l / 2, lines: 'sides' };
     spots.push(spot);
     if (i === target) targetSpot = spot;
     else if (!empty.includes(i)) {
       parked.push({
         x, z,
-        heading: (i * 7) % 3 === 0 ? heading + PI : heading,
+        heading: flip && (i * 7) % 3 === 0 ? heading + PI : heading,
         type: types[(i * 5 + Math.round(z)) % types.length],
       });
     }
@@ -100,17 +101,19 @@ function level3() {
   };
 }
 
-const CURB_XS = [-18.6, -12.4, -6.2, 6.2, 12.4, 18.6];
-
-function curbside() {
+// A street with a curb on the +z side and a gap for the target. `gap` is the
+// half-length of the target bay; parked cars sit either side of it.
+function curbside({ gap = 3.2, hw = 1.25, z = 4.45 } = {}) {
+  const near = gap + 3.0;
+  const xs = [-near - 12.4, -near - 6.2, -near, near, near + 6.2, near + 12.4];
   return {
     lot: { w: 44, d: 24 },
     start: { x: -15, z: 0.9, heading: PI / 2 },
-    target: { x: 0, z: 4.45, heading: PI / 2, hw: 1.25, hl: 3.2, dir: 'forward' },
-    spots: CURB_XS.map((x) => ({ x, z: 4.45, heading: PI / 2, hw: 1.25, hl: 3.0, lines: 'ends' })),
+    target: { x: 0, z, heading: PI / 2, hw, hl: gap, dir: 'forward' },
+    spots: xs.map((x) => ({ x, z: 4.45, heading: PI / 2, hw: 1.25, hl: 3.0, lines: 'ends' })),
     parked: [
-      ...CURB_XS.map((x, i) => ({ x, z: 4.45, heading: PI / 2, type: i % 3 === 1 ? 'hatch' : 'sedan' })),
-      ...[-14, -8, 2, 9, 15].map((x, i) => ({ x, z: -8.6, heading: -PI / 2, type: i % 2 ? 'suv' : 'sedan' })),
+      ...xs.map((x, i) => ({ x, z: 4.45, heading: PI / 2, type: ['sedan', 'hatch', 'sedan', 'taxi'][i % 4] })),
+      ...[-14, -8, 2, 9, 15].map((x, i) => ({ x, z: -8.6, heading: -PI / 2, type: ['sedan', 'suv', 'police', 'pickup', 'hatch'][i] })),
     ],
     walls: [
       { x: 0, z: 5.95, heading: 0, hw: 22, hl: 0.25, h: 0.25, color: 0xc9c4b8 },
@@ -237,4 +240,162 @@ function level10() {
   };
 }
 
-export const LEVELS = [level1(), level2(), level3(), level4(), level5(), level6(), level7(), level8(), level9(), level10()];
+// Two-way street traffic that drives in and out of the end tunnels.
+function streetTraffic(nearZ, farZ) {
+  return [
+    { type: 'sedan', color: 0x3a86ff, path: [[-36, nearZ], [36, nearZ]], loop: false, speed: 6, offset: 0.8 },
+    { type: 'truck', color: 0x2b9348, path: [[36, farZ], [-36, farZ]], loop: false, speed: 5, offset: 0.15 },
+    { type: 'ambulance', path: [[36, farZ], [-36, farZ]], loop: false, speed: 6, offset: 0.65 },
+  ];
+}
+
+function level11() {
+  const types = ['pickup', 'suv', 'sedan', 'van'];
+  const angled = { step: 4.24, w: 3.0, l: 6.2, flip: false, types };
+  const top = row({ z: 8, heading: PI / 4, x0: -14.8, count: 8, target: 5, ...angled });
+  const bottom = row({ z: -9, heading: (3 * PI) / 4, x0: -14.8, count: 8, ...angled });
+  return {
+    name: 'Angle Parking',
+    hint: 'Angled bays are nose-in only. Turn right into the glowing one.',
+    vehicle: 'pickup',
+    lot: { w: 40, d: 36 },
+    start: { x: -15, z: -0.5, heading: PI / 2 },
+    par: 30,
+    target: { ...top.targetSpot, dir: 'forward' },
+    ...merge(top, bottom),
+  };
+}
+
+function level12() {
+  return {
+    name: 'Van Delivery',
+    hint: 'Parallel park the van between the cars. Mind the traffic.',
+    vehicle: 'van',
+    par: 55,
+    timeLimit: 90,
+    tunnels: true,
+    ...curbside({ gap: 4.0, hw: 1.4, z: 4.3 }),
+    traffic: streetTraffic(0.9, -5.6),
+  };
+}
+
+function level13() {
+  const xs = [-20, -15, -10, -5, 0, 5, 10, 15, 20];
+  const spots = xs.map((x) => ({ x, z: 18.7, heading: 0, hw: 2.5, hl: 6, lines: 'sides' }));
+  const cars = row({ z: -20, heading: PI, x0: -27, count: 21, types: ['sedan', 'hatch', 'taxi', 'suv'] });
+  return {
+    name: 'Bus Depot',
+    hint: 'Twelve metres of bus. Swing wide and line it up early.',
+    vehicle: 'bus',
+    lot: { w: 70, d: 50 },
+    start: { x: -26, z: -4, heading: PI / 2 },
+    par: 60,
+    target: { ...spots[6], dir: 'any' },
+    spots: [...spots, ...cars.spots],
+    parked: [
+      ...xs.filter((_, i) => i !== 2 && i !== 6).map((x) => ({ x, z: 18.7, heading: 0, type: 'bus' })),
+      ...cars.parked,
+    ],
+  };
+}
+
+function level14() {
+  const top = row({ z: 8, heading: 0, x0: -13.5, count: 11, target: 2, types: ['sedan', 'suv', 'hatch', 'pickup'] });
+  const bottom = row({ z: -12, heading: PI, x0: -13.5, count: 11, types: ['sedan', 'van', 'hatch'] });
+  const lamps = [[-18.5, -2], [18.5, -2], [0, 12.5], [0, -16.5]];
+  return {
+    name: 'Night Shift',
+    hint: 'It\'s dark. Your headlights only show so much, so take it slow.',
+    night: true,
+    lot: { w: 40, d: 40 },
+    start: { x: -11, z: -2, heading: PI / 2 },
+    par: 35,
+    target: { ...top.targetSpot, dir: 'any' },
+    ...merge(top, bottom),
+    lamps: lamps.map(([x, z]) => ({ x, z })),
+    walls: lamps.map(([x, z]) => ({ x, z, heading: 0, hw: 0.15, hl: 0.15, h: 6, color: 0x55595f })),
+    traffic: [{ type: 'police', path: roundedRect(-16.5, 16.5, -6.3, 2.3, 3), speed: 4, offset: 0.3 }],
+  };
+}
+
+function level15() {
+  const top = row({ z: 16, heading: 0, x0: -13.5, count: 11, target: 8, types: ['sedan', 'hatch', 'taxi', 'suv'] });
+  const bottom = row({ z: -16, heading: PI, x0: -13.5, count: 11, types: ['sedan', 'police', 'hatch', 'suv'] });
+  const loop = roundedRect(-8, 8, -8, 8, 4);
+  return {
+    name: 'Roundabout',
+    hint: 'Cross the roundabout traffic, then park the taxi on the far side.',
+    vehicle: 'taxi',
+    lot: { w: 44, d: 44 },
+    start: { x: -17, z: 0, heading: PI / 2 },
+    par: 35,
+    timeLimit: 60,
+    target: { ...top.targetSpot, dir: 'any' },
+    ...merge(top, bottom),
+    walls: [{ x: 0, z: 0, heading: 0, hw: 4, hl: 4, h: 0.45, color: 0x5d8f4c }],
+    traffic: [
+      { type: 'sedan', color: 0x3a86ff, path: loop, speed: 5, offset: 0 },
+      { type: 'van', color: 0xe76f51, path: loop, speed: 5, offset: 0.34 },
+      { type: 'pickup', color: 0x2a9d8f, path: loop, speed: 5, offset: 0.67 },
+    ],
+  };
+}
+
+function level16() {
+  const xs = [-7.2, -3.6, 0, 3.6, 7.2];
+  const spots = xs.map((x) => ({ x, z: 14.4, heading: PI, hw: 1.6, hl: 3.4, lines: 'sides' }));
+  const bollards = [-9, -5.4, -1.8, 1.8, 5.4, 9].map((x) => ({
+    x, z: 10.7, heading: 0, hw: 0.15, hl: 0.15, h: 0.9, color: 0xffc300,
+  }));
+  return {
+    name: 'Ambulance Bay',
+    hint: 'Reverse the ambulance between the bollards so it can leave nose-first.',
+    vehicle: 'ambulance',
+    lot: { w: 40, d: 36 },
+    wallHeight: 3,
+    tunnels: true,
+    start: { x: -15, z: 6, heading: PI / 2 },
+    par: 45,
+    timeLimit: 70,
+    target: { ...spots[2], dir: 'forward' },
+    spots,
+    parked: xs.filter((_, i) => i === 0 || i === 3).map((x) => ({ x, z: 14.4, heading: PI, type: 'ambulance' })),
+    walls: bollards,
+    traffic: [
+      { type: 'sedan', color: 0x6d597a, path: [[-30, 1.5], [30, 1.5]], loop: false, speed: 6, offset: 0.2 },
+      { type: 'taxi', path: [[30, -3.5], [-30, -3.5]], loop: false, speed: 6, offset: 0.5 },
+      { type: 'bus', color: 0xf4b400, path: [[30, -3.5], [-30, -3.5]], loop: false, speed: 5, offset: 0.95 },
+    ],
+  };
+}
+
+export const LEVELS = [
+  level1(), level2(), level3(), level4(), level5(), level6(), level7(), level8(),
+  level9(), level10(), level11(), level12(), level13(), level14(), level15(), level16(),
+];
+
+// Free Drive: a big mixed lot with traffic and no goal. Any vehicle can be used.
+export const FREE_DRIVE = (() => {
+  const mix = ['sedan', 'hatch', 'suv', 'taxi', 'police', 'pickup'];
+  const top = row({ z: 25, heading: 0, x0: -28.35, count: 22, empty: [3, 9, 14, 19], types: mix });
+  const mid = row({ z: 12, heading: PI, x0: -28.35, count: 22, empty: [1, 6, 12, 17], types: mix });
+  const angled = row({
+    z: -8, heading: PI / 4, x0: -30, count: 10, step: 4.24, w: 3.0, l: 6.2, flip: false,
+    empty: [2, 5, 8], types: ['pickup', 'van', 'ambulance', 'suv'],
+  });
+  const big = row({ z: -25, heading: PI, x0: -33, count: 7, w: 5, l: 12, empty: [1, 4], types: ['bus', 'truck'] });
+  return {
+    name: 'Free Drive',
+    hint: 'No rules, no clock. Explore and park anywhere you like.',
+    free: true,
+    lot: { w: 80, d: 70 },
+    start: { x: 30, z: -2, heading: -PI / 2 },
+    par: 0,
+    ...merge(top, mid, angled, big),
+    traffic: [
+      { type: 'bus', color: 0xf4b400, path: roundedRect(-37, 37, -17, 6, 4), speed: 5, offset: 0 },
+      { type: 'taxi', path: roundedRect(-37, 37, -17, 6, 4), speed: 6, offset: 0.5 },
+      { type: 'police', path: roundedRect(-37, 37, -17, 6, 4), speed: 6, offset: 0.25 },
+    ],
+  };
+})();

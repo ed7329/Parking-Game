@@ -114,7 +114,7 @@ body.playing #hud { display: block; }
 #overlay.show { display: grid; }
 .card {
   background: rgba(22, 27, 37, .94); border-radius: 18px; padding: 28px;
-  width: min(560px, 100%); text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  width: min(760px, 100%); text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.5);
 }
 .card h1 { margin: 0; font-size: 44px; color: var(--accent); letter-spacing: 1px; }
 .card h2 { margin: 0 0 8px; font-size: 32px; }
@@ -159,6 +159,31 @@ kbd {
   background: var(--accent); color: #1a1a1a;
 }
 .actions button.secondary { background: #2b3240; color: var(--text); }
+
+#hud-buttons button.on { background: var(--accent); color: #1a1a1a; }
+
+/* Backup camera inset; the 3D view is drawn into this box by main.js. */
+#rearview {
+  display: none; position: fixed; top: 56px; left: 50%; transform: translateX(-50%);
+  width: min(320px, 42vw); aspect-ratio: 2.4; border: 3px solid #111; border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.5); pointer-events: none;
+}
+#rearview span {
+  position: absolute; top: 4px; left: 8px; font-size: 11px; font-weight: 700; letter-spacing: 1px;
+  color: #fff; text-shadow: 0 1px 3px #000;
+}
+body.playing.first-person #rearview { display: block; }
+body.playing.first-person #status-wrap { bottom: 80px; top: auto; }
+
+.card h3 { margin: 22px 0 2px; font-size: 18px; }
+.sub.small { font-size: 13px; margin: 0 0 10px; }
+.garage { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+.vehicle-btn {
+  display: grid; justify-items: center; gap: 2px; padding: 8px 4px; border-radius: 10px;
+  border: 1px solid #333c4d; background: #1d2431; color: var(--text); font-size: 12px;
+}
+.vehicle-btn span { font-size: 26px; }
+.vehicle-btn:hover { border-color: var(--accent); }
 
 @media (max-width: 600px) {
   #hud-buttons { flex-direction: column; }
