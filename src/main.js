@@ -4,12 +4,14 @@ import { Car } from './car.js';
 import { VEHICLES, buildVehicleMesh, animateVehicleLights } from './vehicles.js';
 import { TrafficCar } from './traffic.js';
 import { Sound } from './audio.js';
-import { obbIntersects, pointObbDistance, cornersInside, angleDiff, axes } from './collision.js';
+import { mirrorTarget } from './interior.js';
+import { obbIntersects, pointObbDistance, cornersInside, angleDiff, axes, toLocal } from './collision.js';
 
 const PARKED_COLORS = [0x2a9d8f, 0xe9c46a, 0x264653, 0xf4a261, 0x8d99ae, 0xf1faee, 0x457b9d, 0x6d597a, 0x3a3a3a];
 const ALIGN_TOLERANCE = 0.2; // radians (~11 degrees)
 const STOP_SPEED = 0.25;
 const HOLD_TIME = 1.0;
+const DAMAGE_PER_IMPACT = 7; // percent per m/s of impact speed
 const CAMERA_MODES = ['chase', 'top', 'first'];
 const CAMERA_LABELS = { chase: 'Chase camera', top: 'Top-down camera', first: 'First-person camera' };
 const PLAYABLE = ['sedan', 'hatch', 'suv', 'pickup', 'van', 'taxi', 'police', 'ambulance', 'truck', 'bus'];
@@ -105,6 +107,24 @@ const storage = {
 let progress = storage.load();
 
 const currentLevel = () => state.level;
+
+// Player settings: driving side and gearbox, saved in the browser.
+const settings = (() => {
+  const defaults = { drive: 'right', gearbox: 'auto' };
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem('parking-game-settings')) };
+  } catch {
+    return defaults;
+  }
+})();
+
+function saveSettings() {
+  try {
+    localStorage.setItem('parking-game-settings', JSON.stringify(settings));
+  } catch {
+    // Settings just won't persist.
+  }
+}
 
 // ---------- Level building ----------
 function box(w, h, d, color, opts = {}) {
@@ -296,10 +316,11 @@ function buildLevel(level) {
   }
 }
 
+// Always builds a fresh vehicle, which also repairs any damage.
 function usePlayerVehicle(type) {
-  if (player.type === type) return;
   scene.remove(player.mesh);
-  player.setVehicle(type);
+  player.manual = settings.gearbox === 'manual';
+  player.setVehicle(type, undefined, settings.drive === 'right' ? -1 : 1);
   scene.add(player.mesh);
   attachHeadlights();
   applyCameraMode();
@@ -323,6 +344,8 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   if (e.code === 'KeyC') cycleCamera();
   if (e.code === 'KeyV') toggleFirstPerson();
+  if (e.code === 'KeyE' && state.mode === 'playing') player.shift(1);
+  if (e.code === 'KeyQ' && state.mode === 'playing') player.shift(-1);
   if (e.code === 'KeyM') toggleMute();
   if (e.code === 'KeyH' && state.mode === 'playing') sound.horn();
   if (e.code === 'KeyR' && state.mode !== 'menu') restart();
@@ -366,6 +389,7 @@ const hud = {
   par: $('hud-par'),
   parLabel: $('hud-par-label'),
   hits: $('hud-hits'),
+  damage: $('hud-damage'),
   speed: $('hud-speed'),
   gear: $('hud-gear'),
   status: $('hud-status'),
@@ -379,6 +403,14 @@ const overlay = $('overlay');
 
 $('btn-camera').addEventListener('click', cycleCamera);
 $('btn-fp').addEventListener('click', toggleFirstPerson);
+$('btn-shift-up').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  player.shift(1);
+});
+$('btn-shift-down').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  player.shift(-1);
+});
 $('btn-restart').addEventListener('click', restart);
 $('btn-menu').addEventListener('click', showMenu);
 $('btn-horn').addEventListener('click', () => sound.horn());
@@ -459,13 +491,17 @@ function showMenu() {
       <span class="num">${i + 1}</span>
       <span class="name">${lvl.name}</span>
       <span class="tags">${levelTags(lvl)}</span>
-      <span class="stars">${locked ? '🔒' : stars(best?.stars ?? 0)}</span>
+      <span class="stars">${locked ? '🔒' : stars(best?.stars ?? 0)}${best?.manual ? ' <em class="badge">MANUAL</em>' : ''}</span>
       ${best ? `<span class="best">Best ${best.time.toFixed(1)}s</span>` : ''}
     </button>`;
   }).join('');
   overlay.innerHTML = `<div class="card">
     <h1>Park It!</h1>
     <p class="sub">Steer into the glowing bay, line up, and come to a stop.</p>
+    <div class="settings">
+      <button id="set-drive" class="setting"></button>
+      <button id="set-gearbox" class="setting"></button>
+    </div>
     <div class="levels">${cards}</div>
     <h3>Free Drive</h3>
     <p class="sub small">Pick any vehicle and explore a big lot with traffic. No clock, no score.</p>
@@ -474,6 +510,7 @@ function showMenu() {
     <div class="controls-help">
       <div><kbd>W</kbd><kbd>S</kbd> / <kbd>↑</kbd><kbd>↓</kbd> drive · brake · reverse</div>
       <div><kbd>A</kbd><kbd>D</kbd> / <kbd>←</kbd><kbd>→</kbd> steer · <kbd>Space</kbd> handbrake · <kbd>H</kbd> horn</div>
+      <div><kbd>E</kbd> / <kbd>Q</kbd> shift up / down (manual gearbox)</div>
       <div><kbd>V</kbd> first person on/off · <kbd>C</kbd> cycle cameras · <kbd>M</kbd> mute · <kbd>R</kbd> restart · <kbd>Esc</kbd> menu</div>
     </div>
     <button id="menu-mute" class="link-btn"></button>
@@ -486,6 +523,17 @@ function showMenu() {
     b.addEventListener('click', () => startFreeDrive(b.dataset.vehicle)),
   );
   $('menu-mute').addEventListener('click', toggleMute);
+  $('set-drive').addEventListener('click', () => {
+    settings.drive = settings.drive === 'right' ? 'left' : 'right';
+    saveSettings();
+    renderSettings();
+  });
+  $('set-gearbox').addEventListener('click', () => {
+    settings.gearbox = settings.gearbox === 'auto' ? 'manual' : 'auto';
+    saveSettings();
+    renderSettings();
+  });
+  renderSettings();
   renderMute();
 }
 
@@ -500,6 +548,14 @@ function startFreeDrive(type) {
   hud.level.textContent = `Free Drive · ${VEHICLES[type].name}`;
   hud.parLabel.textContent = 'Mode';
   hud.par.textContent = 'Free';
+}
+
+function renderSettings() {
+  $('set-drive').innerHTML = `<b>Steering</b>${settings.drive === 'right' ? 'Right-hand drive' : 'Left-hand drive'}`;
+  $('set-gearbox').innerHTML = settings.gearbox === 'manual'
+    ? '<b>Gearbox</b>Manual (hard)'
+    : '<b>Gearbox</b>Automatic';
+  $('set-gearbox').classList.toggle('hard', settings.gearbox === 'manual');
 }
 
 function startLevel(i) {
@@ -519,10 +575,14 @@ function beginLevel(level, vehicle) {
   state.hits = 0;
   state.hitCooldown = 0;
   state.hold = 0;
+  state.damage = 0;
   usePlayerVehicle(vehicle);
+  document.body.classList.toggle('manual', player.manual);
   buildLevel(level);
   player.reset(level.start.x, level.start.z, level.start.heading);
   hud.par.classList.remove('over');
+  hud.damage.textContent = '0%';
+  hud.damage.classList.remove('over');
   hud.status.textContent = '';
   hud.progress.style.width = '0%';
   snapCamera();
@@ -553,8 +613,9 @@ function completeLevel() {
 
   const prev = progress[state.levelIndex];
   const isRecord = !prev || earned > prev.stars || (earned === prev.stars && state.time < prev.time);
-  if (isRecord) {
-    progress[state.levelIndex] = { stars: earned, time: state.time };
+  const manual = player.manual || prev?.manual;
+  if (isRecord || (manual && !prev?.manual)) {
+    progress[state.levelIndex] = isRecord ? { stars: earned, time: state.time, manual } : { ...prev, manual };
     storage.save(progress);
   }
 
@@ -575,12 +636,12 @@ function completeLevel() {
   $('ov-next').addEventListener('click', nextLevel);
 }
 
-function failLevel(reason) {
+function failLevel(reason, detail = 'The clock beat you this time.') {
   state.mode = 'failed';
   sound.fail();
   showResult(`
     <h2>${reason}</h2>
-    <p class="sub">The clock beat you this time.</p>
+    <p class="sub">${detail}</p>
     <div class="actions">
       <button id="ov-menu" class="secondary">Menu</button>
       <button id="ov-retry">Try again</button>
@@ -595,10 +656,50 @@ function nearby(o, b) {
   return Math.abs(o.x - b.x) < r && Math.abs(o.z - b.z) < r;
 }
 
+let lastHit = null;
 function collides(b) {
-  for (const o of obstacles) if (nearby(o, b) && obbIntersects(b, o)) return true;
-  for (const t of traffic) if (obbIntersects(b, t.box)) return true;
+  for (const o of obstacles) {
+    if (nearby(o, b) && obbIntersects(b, o)) {
+      lastHit = o;
+      return true;
+    }
+  }
+  for (const t of traffic) {
+    if (obbIntersects(b, t.box)) {
+      lastHit = t.box;
+      return true;
+    }
+  }
   return false;
+}
+
+// Finds where on the player's body it touched `other`, in vehicle space.
+function contactPoint(other) {
+  const b = player.box;
+  const a = axes(b);
+  let best = null;
+  let bestD = Infinity;
+  for (let i = 0; i < 32; i++) {
+    // Walk the outline: 8 points along each edge.
+    const t = (i % 8) / 8;
+    const edge = Math.floor(i / 8);
+    const [l, w] = [
+      [1, 1 - 2 * t], [1 - 2 * t, -1], [-1, -1 + 2 * t], [-1 + 2 * t, 1],
+    ][edge];
+    const x = b.x + a.fx * b.hl * l + a.rx * b.hw * w;
+    const z = b.z + a.fz * b.hl * l + a.rz * b.hw * w;
+    const d = pointObbDistance(other, x, z);
+    if (d < bestD) {
+      bestD = d;
+      best = { x, z };
+    }
+  }
+  const p = toLocal(b, best.x, best.z);
+  const front = Math.abs(p.l) / b.hl >= Math.abs(p.w) / b.hw;
+  return {
+    contact: { x: p.w, z: p.l },
+    normal: front ? { x: 0, z: Math.sign(p.l) } : { x: Math.sign(p.w), z: 0 },
+  };
 }
 
 // Distance from the front or rear bumper to the nearest obstacle.
@@ -657,11 +758,22 @@ function update(dt) {
       state.hitCooldown = 0.6;
       state.shake = Math.min(0.4, impact * 0.08);
       sound.crash(impact);
+      const { contact, normal } = contactPoint(lastHit);
+      player.damage(contact, normal, impact);
+      state.damage = Math.min(100, state.damage + impact * DAMAGE_PER_IMPACT);
+      hud.damage.textContent = `${Math.round(state.damage)}%`;
+      hud.damage.classList.toggle('over', state.damage >= 60);
       toast(impact > 3 ? 'Crunch! 💥' : 'Bump!', 0.9);
     }
   }
+  for (const e of player.events.splice(0)) {
+    if (e.type === 'grind') sound.grind();
+    if (e.type === 'stall') sound.stall();
+    toast(e.text, 1.8);
+  }
   player.syncMesh();
-  sound.updateEngine(true, Math.abs(player.speed) / player.spec.maxFwd, player.throttle, player.spec.engine);
+  sound.updateEngine(player.engineRunning, player.rpm, player.throttle, player.spec.engine);
+  document.body.classList.toggle('reversing', player.gear === 'R');
 
   if (!level.free) {
     // Parking check.
@@ -706,6 +818,7 @@ function update(dt) {
   sound.updateSensor(dt, Math.abs(player.speed) > 0.05 || player.throttle ? (player.gear === 'R' ? rear : front) : 9);
 
   if (state.hold >= HOLD_TIME) completeLevel();
+  else if (!level.free && state.damage >= 100) failLevel('Wrecked!', 'Too many crashes. Your vehicle is a write-off.');
   else if (level.timeLimit && state.time >= level.timeLimit) failLevel('Out of time!');
 }
 
@@ -719,8 +832,8 @@ function desiredCamera() {
   const sz = Math.cos(player.heading);
   const spec = player.spec;
   if (state.cameraMode === 'first') {
-    // Seat position in vehicle space: x is towards the driver's (left) side.
-    const [lx, ly, lz] = spec.seat;
+    // Driver's eye in vehicle space (+x is the vehicle's left).
+    const { x: lx, y: ly, z: lz } = player.mesh.userData.interior.userData.eye;
     camTarget.set(player.x + sz * lx + sx * lz, ly, player.z - sx * lx + sz * lz);
     camLook.set(camTarget.x + sx * 10, ly - 1.1, camTarget.z + sz * 10);
     return;
@@ -772,6 +885,24 @@ function updateCamera(dt) {
   sun.target.updateMatrixWorld();
 }
 
+// Interior mirror: renders the view behind the car into the mirror's texture.
+// The player's own vehicle is hidden for this pass so it doesn't block the view.
+const mirrorCamera = new THREE.PerspectiveCamera(32, 512 / 170, 0.3, 200);
+function renderMirror() {
+  const { mirrorPos } = player.mesh.userData.interior.userData;
+  const sx = Math.sin(player.heading);
+  const sz = Math.cos(player.heading);
+  const wx = player.x + sz * mirrorPos.x + sx * mirrorPos.z;
+  const wz = player.z - sx * mirrorPos.x + sz * mirrorPos.z;
+  mirrorCamera.position.set(wx, mirrorPos.y + 0.05, wz);
+  mirrorCamera.lookAt(wx - sx * 20, mirrorPos.y - 0.6, wz - sz * 20);
+  player.mesh.visible = false;
+  renderer.setRenderTarget(mirrorTarget);
+  renderer.render(scene, mirrorCamera);
+  renderer.setRenderTarget(null);
+  player.mesh.visible = true;
+}
+
 // Backup camera: mounted above the rear bumper, looking back and down.
 const rearView = $('rearview');
 function renderRearCamera() {
@@ -812,8 +943,10 @@ function frame(now) {
   update(dt);
   updateCamera(dt);
   animateVehicleLights(now / 1000);
+  const inCabin = state.cameraMode === 'first' && state.mode === 'playing';
+  if (inCabin) renderMirror();
   renderer.render(scene, camera);
-  if (state.cameraMode === 'first' && state.mode === 'playing') renderRearCamera();
+  if (inCabin && player.gear === 'R') renderRearCamera();
   requestAnimationFrame(frame);
 }
 
@@ -826,4 +959,4 @@ showMenu();
 requestAnimationFrame(frame);
 
 // Exposed for debugging and automated tests.
-window.__game = { state, player, LEVELS, startLevel, startFreeDrive, collides, cornersInside, traffic: () => traffic, sound };
+window.__game = { state, player, LEVELS, startLevel, startFreeDrive, play: (level) => beginLevel(level, level.vehicle ?? 'sedan'), collides, cornersInside, traffic: () => traffic, sound };

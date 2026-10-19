@@ -20,14 +20,24 @@ python3 -m http.server 8000
 | Brake / reverse | `S` / `↓` (hold when stopped to reverse) | BRAKE / REV |
 | Steer | `A` `D` / `←` `→` | ◀ ▶ |
 | Handbrake | `Space` | — |
+| Shift up / down (manual gearbox) | `E` / `Q` | ▲ ▼ |
 | Horn | `H` | 📯 |
-| First person on/off (with rear backup camera) | `V` | 👁 |
+| First person on/off (interior, mirror, backup camera when reversing) | `V` | 👁 |
 | Cycle cameras: chase / top-down / first person | `C` | 🎥 |
 | Mute | `M` | 🔊 |
 | Restart level | `R` | ↻ |
 | Menu | `Esc` | ☰ |
 
 Get the vehicle fully inside the glowing bay, lined up, and stopped for one second.
+Crashes dent the bodywork and break lights; reach 100% damage and the vehicle is written off.
+
+**Settings** (top of the menu):
+- **Steering:** right-hand drive (default) or left-hand drive. Moves the driver's seat, wheel and camera.
+- **Gearbox:** automatic, or **manual** for extra difficulty. In manual you start in neutral and shift
+  through R, N and 1–5 yourself. `S` only brakes; it won't put you in reverse. Shifting into reverse
+  (or back into a forward gear) while moving grinds and is refused, and letting the revs drop in
+  2nd gear or above stalls the engine (shift to N or 1 to restart). Levels finished in manual get a badge.
+
 Stars are awarded for beating par time and avoiding bumps. Timed levels are failed if the
 clock runs out. Progress is saved in your browser.
 
@@ -49,6 +59,15 @@ clock runs out. Progress is saved in your browser.
 14. **Night Shift**: park in the dark with headlights and street lamps.
 15. **Roundabout**: cross circling traffic, then park a taxi, against the clock.
 16. **Ambulance Bay**: reverse an ambulance between bollards with traffic passing.
+
+**Expert levels.** Each was tuned to the tightest size that our physics search could still solve:
+
+17. **Needle's Eye**: parallel park into a bay only 0.7 m longer than the car.
+18. **Truck Curbside**: parallel park the box truck.
+19. **Pillar Hell**: reverse in from a 5.2 m aisle lined with pillars.
+20. **Bus Reverse**: back a bus in with 0.55 m clearance on either side.
+21. **Cone Gauntlet**: five 3 m cone gates and a tight bay in 30 seconds.
+22. **Gridlock**: reverse a van in while four cars circle round you.
 
 **Free Drive** (from the menu): pick any of the 10 vehicles (sedan, hatchback, SUV, pickup,
 delivery van, taxi, police car, ambulance, box truck, city bus) and explore a big lot with traffic.
@@ -73,7 +92,9 @@ Any static host works too (Netlify, Vercel, Cloudflare Pages): point it at the r
 
 - `index.html`, `style.css`: page, HUD, menus, touch controls
 - `src/main.js`: scene, level building, game loop, camera, HUD and input
-- `src/car.js`: player vehicle physics (kinematic bicycle model)
+- `src/car.js`: player vehicle physics (kinematic bicycle model) and the manual gearbox
+- `src/interior.js`: first-person cabin, live gauges and the rear-view mirror
+- `src/damage.js`: crumples the bodywork around crash points
 - `src/vehicles.js`: vehicle specs and 3D models (cars, SUV, pickup, van, truck, bus and liveried variants)
 - `src/traffic.js`: AI traffic that follows spline paths
 - `src/audio.js`: synthesised engine, crash, sensor and horn sounds

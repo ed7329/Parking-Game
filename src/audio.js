@@ -81,17 +81,16 @@ export class Sound {
     this.engine = { low, high, filter, gain, lfo };
   }
 
-  // speedRatio 0..1, throttle 0..1, pitch scales the engine (trucks are lower).
-  updateEngine(active, speedRatio, throttle, pitch = 1) {
+  // rpm 0..1, throttle 0..1, pitch scales the engine (trucks are lower).
+  updateEngine(active, rpm, throttle, pitch = 1) {
     if (!this.engine) return;
     const t = this.ctx.currentTime;
-    const rpm = 0.15 + speedRatio * 0.7 + throttle * 0.15;
     const base = (32 + rpm * 85) * pitch;
     this.engine.low.frequency.setTargetAtTime(base, t, 0.08);
     this.engine.high.frequency.setTargetAtTime(base * 2.01, t, 0.08);
     this.engine.lfo.frequency.setTargetAtTime(base / 4, t, 0.08);
     this.engine.filter.frequency.setTargetAtTime(300 + rpm * 1400 + throttle * 600, t, 0.1);
-    const vol = active ? 0.06 + throttle * 0.06 + speedRatio * 0.04 : 0;
+    const vol = active ? 0.06 + throttle * 0.06 + rpm * 0.04 : 0;
     this.engine.gain.gain.setTargetAtTime(vol, t, active ? 0.1 : 0.25);
   }
 
@@ -154,6 +153,42 @@ export class Sound {
       this.tone(1800, this.ctx.currentTime, solid ? 0.12 : 0.07, 'sine', 0.08);
       this.beepTimer = solid ? 0.1 : 0.08 + distance * 0.35;
     }
+  }
+
+  // Gearbox grinding: a harsh, buzzy burst of noise.
+  grind() {
+    if (!this.ctx) return;
+    const c = this.ctx;
+    const t = c.currentTime;
+    const src = c.createBufferSource();
+    src.buffer = this.noise;
+    const filter = c.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 2600;
+    filter.Q.value = 3;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.5, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+    src.connect(filter).connect(g).connect(this.master);
+    src.start(t);
+    src.stop(t + 0.5);
+    this.tone(95, t, 0.4, 'sawtooth', 0.12);
+  }
+
+  // Engine dying: a falling, sputtering note.
+  stall() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(70, t);
+    o.frequency.exponentialRampToValueAtTime(18, t + 0.6);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.25, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
+    o.connect(g).connect(this.master);
+    o.start(t);
+    o.stop(t + 0.75);
   }
 
   horn() {

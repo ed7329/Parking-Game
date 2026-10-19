@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { buildInterior } from './interior.js';
 
 // Vehicle definitions. Units are metres and seconds. `profile` is the side
 // silhouette above the wheel arches (front to rear, as [z, y]); `glass` is the
@@ -34,7 +35,7 @@ export const VEHICLES = {
     maxSteer: 0.55, steerRate: 1.8, accel: 3, reverseAccel: 2.4, brake: 8, maxFwd: 8, maxRev: 3.2,
     profile: [[3.6, 0.45], [3.63, 1.25], [3.45, 1.5], [1.8, 1.5], [1.8, 1.15], [-3.6, 1.15], [-3.6, 0.45]],
     glass: [[3.38, 1.5], [3.0, 2.3], [1.85, 2.3], [1.85, 1.5]],
-    glassWidth: 2.2, seat: [0.55, 2.1, 2.55], engine: 0.6, chase: { back: 12, height: 7.5 },
+    glassWidth: 2.2, seat: [0.55, 2.1, 2.3], engine: 0.6, chase: { back: 12, height: 7.5 },
     cargo: { z0: -3.6, z1: 1.7, y0: 1.15, y1: 3.3, color: 0xf2f2ee },
   },
   pickup: {
@@ -52,7 +53,7 @@ export const VEHICLES = {
     maxSteer: 0.58, steerRate: 2.1, accel: 4, reverseAccel: 3, brake: 10, maxFwd: 9, maxRev: 3.8,
     profile: [[2.7, 0.38], [2.72, 1.0], [2.55, 1.15], [1.55, 1.25], [-2.7, 1.25], [-2.7, 0.38]],
     glass: [[1.55, 1.25], [0.95, 2.4], [0.35, 2.4], [0.35, 1.25]],
-    glassWidth: 2.0, seat: [0.45, 1.9, 0.8], engine: 0.8, chase: { back: 10, height: 5.8 },
+    glassWidth: 2.0, seat: [0.45, 1.9, 0.4], engine: 0.8, chase: { back: 10, height: 5.8 },
     cargo: { z0: -2.7, z1: 0.35, y0: 1.25, y1: 2.47 },
   },
   bus: {
@@ -61,7 +62,7 @@ export const VEHICLES = {
     maxSteer: 0.62, steerRate: 1.7, accel: 2.6, reverseAccel: 2, brake: 7, maxFwd: 7.5, maxRev: 3,
     profile: [[5.5, 0.45], [5.52, 1.3], [-5.5, 1.3], [-5.5, 0.45]],
     glass: [[5.45, 1.3], [5.3, 2.75], [-5.3, 2.75], [-5.42, 1.3]],
-    glassWidth: 2.56, seat: [0.7, 2.25, 4.7], engine: 0.5, chase: { back: 15, height: 8.5 },
+    glassWidth: 2.56, seat: [0.7, 2.25, 4.3], engine: 0.5, chase: { back: 15, height: 8.5 },
     steering: { drop: 0.55, ahead: 0.6 },
     playerColor: 0xf4b400,
   },
@@ -93,10 +94,10 @@ function sideShape(spec) {
   return s;
 }
 
-function extrudeSide(shape, width) {
+function extrudeSide(shape, width, steps = 1) {
   const depth = Math.max(width - BEVEL * 2, 0.01);
   const g = new THREE.ExtrudeGeometry(shape, {
-    depth, bevelEnabled: true, bevelThickness: BEVEL, bevelSize: BEVEL, bevelSegments: 2, curveSegments: 10,
+    depth, steps, bevelEnabled: true, bevelThickness: BEVEL, bevelSize: BEVEL, bevelSegments: 2, curveSegments: 10,
   });
   // Shape x -> world z (length), shape y -> height, extrusion -> width.
   g.translate(0, 0, -depth / 2);
@@ -143,6 +144,7 @@ const mat = {
   plate: new THREE.MeshStandardMaterial({ color: 0xf5f5f0, roughness: 0.5 }),
   head: new THREE.MeshStandardMaterial({ color: 0xfff6d8, emissive: 0xfff2c0, emissiveIntensity: 0.6 }),
   tail: new THREE.MeshStandardMaterial({ color: 0x8a0000, emissive: 0x300000 }),
+  broken: new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.4, metalness: 0.3 }),
   sign: new THREE.MeshStandardMaterial({ color: 0xfff3b0, emissive: 0xffd34d, emissiveIntensity: 0.5 }),
   stripe: new THREE.MeshStandardMaterial({ color: 0xd62828, roughness: 0.5 }),
 };
@@ -174,25 +176,40 @@ function part(geometry, material, x, y, z) {
   return m;
 }
 
+// The player's body is finely tessellated (and not shared) so it can be dented.
+function deformableBody(spec) {
+  const dense = new THREE.Shape(sideShape(spec).getSpacedPoints(180));
+  return extrudeSide(dense, spec.hw * 2, 12);
+}
+
 // Builds a vehicle facing +z. Geometry and most materials are shared, so many
-// parked vehicles stay cheap. The player's vehicle gets its own tail-light
-// material (for brake lights) and a steering wheel for first-person view.
-export function buildVehicleMesh(type, color, isPlayer = false) {
+// parked vehicles stay cheap. The player's vehicle gets its own deformable
+// body, its own light materials and a cabin interior for first-person view.
+// `side` is the driver's side: -1 right-hand drive, +1 left-hand drive.
+export function buildVehicleMesh(type, color, isPlayer = false, side = -1) {
   const spec = VEHICLES[type];
   const geo = geometriesFor(type);
   const p = paint(spec.fixedColor ?? color);
   const g = new THREE.Group();
   const cabinParts = [];
+  const deformables = [];
 
-  g.add(part(geo.body, p, 0, 0, 0));
+  const body = part(isPlayer ? deformableBody(VEHICLES[spec.base ?? type]) : geo.body, p, 0, 0, 0);
+  g.add(body);
+  if (isPlayer) deformables.push(body);
   const glass = part(geo.glass, mat.glass, 0, 0, 0);
   const roof = part(geo.roof, p, ...geo.roofPos);
   g.add(glass, roof);
-  cabinParts.push(glass, roof);
+  cabinParts.push(glass);
 
   if (geo.cargo) {
     const c = spec.cargo;
-    g.add(part(geo.cargo, c.color ? paint(c.color) : p, 0, (c.y0 + c.y1) / 2, (c.z0 + c.z1) / 2));
+    const cargoGeo = isPlayer
+      ? new THREE.BoxGeometry(spec.hw * 2 - 0.05, c.y1 - c.y0, c.z1 - c.z0, 10, 8, 24)
+      : geo.cargo;
+    const cargo = part(cargoGeo, c.color ? paint(c.color) : p, 0, (c.y0 + c.y1) / 2, (c.z0 + c.z1) / 2);
+    g.add(cargo);
+    if (isPlayer) deformables.push(cargo);
   }
   if (geo.bed) {
     const b = spec.bed;
@@ -224,9 +241,12 @@ export function buildVehicleMesh(type, color, isPlayer = false) {
   g.add(part(geo.plate, mat.plate, 0, spec.bottom + 0.14, rear - 0.04));
 
   const tailMat = isPlayer ? mat.tail.clone() : mat.tail;
+  const lights = [];
   for (const sx of [-1, 1]) {
-    g.add(part(geo.light, mat.head, sx * (spec.hw - 0.3), lightY, front + 0.02));
-    g.add(part(geo.light, tailMat, sx * (spec.hw - 0.3), spec.cargo ? 0.85 : lightY, rear - 0.02));
+    const head = part(geo.light, mat.head, sx * (spec.hw - 0.3), lightY, front + 0.02);
+    const tail = part(geo.light, tailMat, sx * (spec.hw - 0.3), spec.cargo ? 0.85 : lightY, rear - 0.02);
+    g.add(head, tail);
+    lights.push(head, tail);
     const mirror = part(geo.mirror, mat.trim, sx * (spec.hw + 0.08), spec.glass[0][1] + 0.12, spec.glass[0][0] - 0.15);
     g.add(mirror);
   }
@@ -251,29 +271,13 @@ export function buildVehicleMesh(type, color, isPlayer = false) {
     }
   }
 
-  // Dashboard and steering wheel, only shown in first-person view.
   let interior = null;
-  let wheelSpin = null;
   if (isPlayer) {
-    const [sx, sy, sz] = spec.seat;
-    const [gz, gy] = spec.glass[0];
-    interior = new THREE.Group();
+    interior = buildInterior(spec, side);
     interior.visible = false;
-    const dash = part(new THREE.BoxGeometry(spec.glassWidth, 0.14, 0.7), mat.trim, 0, gy + 0.05, gz - 0.25);
-    const steering = new THREE.Group();
-    const wheelPos = spec.steering ?? { drop: 0.32, ahead: 0.5 };
-    steering.position.set(sx, sy - wheelPos.drop, sz + wheelPos.ahead);
-    steering.rotation.x = -0.5;
-    wheelSpin = new THREE.Group();
-    wheelSpin.add(
-      new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.022, 8, 28), mat.trim),
-      new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.03, 0.02), mat.trim),
-    );
-    steering.add(wheelSpin);
-    interior.add(dash, steering);
     g.add(interior);
   }
 
-  g.userData = { frontPivots, spinners, tailMat, cabinParts, interior, wheelSpin };
+  g.userData = { frontPivots, spinners, tailMat, cabinParts, interior, deformables, lights, brokenMat: mat.broken };
   return g;
 }

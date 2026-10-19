@@ -18,10 +18,12 @@
       <div class="row"><span>Time</span><b id="hud-time">0.0s</b></div>
       <div class="row"><span id="hud-par-label">Par</span><b id="hud-par"></b></div>
       <div class="row"><span>Bumps</span><b id="hud-hits">0</b></div>
+      <div class="row"><span>Damage</span><b id="hud-damage">0%</b></div>
     </div>
 
     <div class="panel" id="gauge">
       <div id="hud-gear">D</div>
+      <div class="shift-hint">Q ▼ ▲ E</div>
       <div><b id="hud-speed">0</b><small> km/h</small></div>
     </div>
 
@@ -55,6 +57,10 @@
       <button data-touch="right">▶</button>
     </div>
     <div class="cluster">
+      <div class="shift">
+        <button id="btn-shift-up">▲</button>
+        <button id="btn-shift-down">▼</button>
+      </div>
       <button data-touch="brake" class="pedal brake">BRAKE<br /><small>/ REV</small></button>
       <button data-touch="gas" class="pedal gas">GAS</button>
     </div>

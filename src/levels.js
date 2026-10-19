@@ -369,9 +369,122 @@ function level16() {
   };
 }
 
+// ---------- Expert levels ----------
+// Each takes the dimension that makes it hard, so it can be tuned until it is
+// only just possible (see the README for how these were checked).
+
+export function needleEye(gap = 2.45) {
+  return {
+    name: 'Needle\'s Eye',
+    hint: 'Barely a car-length and a bit. Reverse in, and expect to shuffle back and forth.',
+    par: 60,
+    timeLimit: 120,
+    ...curbside({ gap, hw: 1.12, z: 4.5 }),
+  };
+}
+
+export function truckParallel(gap = 4.0) {
+  return {
+    name: 'Truck Curbside',
+    hint: 'Parallel park the box truck. Watch the back swing out.',
+    vehicle: 'truck',
+    par: 75,
+    timeLimit: 150,
+    ...curbside({ gap, hw: 1.45, z: 4.2 }),
+  };
+}
+
+export function pillarHell(aisle = 5.2) {
+  const rowZ = aisle / 2 + 2.75;
+  const top = row({ z: rowZ, heading: PI, x0: -12.15, count: 10, target: 6, types: ['sedan', 'suv', 'hatch'] });
+  const bottom = row({ z: -rowZ, heading: 0, x0: -12.15, count: 10, types: ['sedan', 'suv', 'hatch'] });
+  const pillars = [];
+  for (let i = 0; i <= 10; i += 2) {
+    const x = -12.15 - 1.35 + i * 2.7;
+    for (const z of [rowZ - 2.45, -rowZ + 2.45]) pillars.push({ x, z, heading: 0, hw: 0.3, hl: 0.3, h: 3, color: 0x9a9fa6 });
+  }
+  return {
+    name: 'Pillar Hell',
+    hint: 'A narrow aisle and pillars everywhere. Reverse in so you can drive out nose-first.',
+    lot: { w: 34, d: 2 * rowZ + 6.5 },
+    indoor: true,
+    start: { x: -12.5, z: 0, heading: PI / 2 },
+    par: 50,
+    target: { ...top.targetSpot, dir: 'forward' },
+    ...merge(top, bottom),
+    walls: pillars,
+  };
+}
+
+export function busReverse(spacing = 3.15) {
+  const xs = [-4, -3, -2, -1, 0, 1, 2, 3, 4].map((i) => i * spacing);
+  const spots = xs.map((x) => ({ x, z: 18.7, heading: PI, hw: spacing / 2, hl: 6, lines: 'sides' }));
+  return {
+    name: 'Bus Reverse',
+    hint: 'Back the bus into the gap between the other buses. It must leave nose-first.',
+    vehicle: 'bus',
+    lot: { w: 70, d: 50 },
+    start: { x: -24, z: -2, heading: PI / 2 },
+    par: 80,
+    timeLimit: 150,
+    target: { ...spots[5], dir: 'forward' },
+    spots,
+    parked: xs.filter((_, i) => i !== 5).map((x) => ({ x, z: 18.7, heading: PI, type: 'bus' })),
+  };
+}
+
+export function coneGauntlet(gate = 3.0) {
+  const gates = [[0, -20], [3.2, -10], [-3.2, 0], [3.2, 10], [0, 19]];
+  const cones = gates.flatMap(([x, z]) => [{ x: x - gate / 2 - 0.25, z }, { x: x + gate / 2 + 0.25, z }]);
+  const r = row({ z: 28, heading: 0, x0: -7.2, count: 7, target: 3, w: 2.4, types: ['suv'] });
+  return {
+    name: 'Cone Gauntlet',
+    hint: 'Thread every cone gate without a touch, then squeeze between the SUVs. Quickly!',
+    vehicle: 'hatch',
+    lot: { w: 30, d: 66 },
+    start: { x: 0, z: -29, heading: 0 },
+    par: 22,
+    timeLimit: 30,
+    target: { ...r.targetSpot, dir: 'any' },
+    spots: r.spots,
+    parked: r.parked,
+    // Barriers either side of each gate, so going round the cones isn't an option.
+    walls: gates.flatMap(([x, z]) => [
+      { x: (x - gate / 2 - 0.5 - 15) / 2, z, heading: 0, hw: (x - gate / 2 - 0.5 + 15) / 2, hl: 0.15, h: 0.5, color: 0xd62828 },
+      { x: (x + gate / 2 + 0.5 + 15) / 2, z, heading: 0, hw: (15 - x - gate / 2 - 0.5) / 2, hl: 0.15, h: 0.5, color: 0xd62828 },
+    ]),
+    cones,
+  };
+}
+
+export function gridlock(bayW = 2.8) {
+  const types = ['sedan', 'suv', 'van', 'pickup'];
+  const top = row({ z: 8.5, heading: PI, x0: -14.5, count: 11, target: 6, w: bayW, l: 6, types });
+  const bottom = row({ z: -12.5, heading: 0, x0: -14.5, count: 11, w: bayW, l: 6, types });
+  const loop = roundedRect(-17, 17, -7.2, 2.6, 3);
+  return {
+    name: 'Gridlock',
+    hint: 'Reverse the van in while four cars circle round you. No pressure.',
+    vehicle: 'van',
+    lot: { w: 40, d: 42 },
+    start: { x: -12, z: -2.3, heading: PI / 2 },
+    par: 45,
+    timeLimit: 75,
+    target: { ...top.targetSpot, dir: 'forward' },
+    ...merge(top, bottom),
+    traffic: [
+      { type: 'taxi', path: loop, speed: 4.5, offset: 0.05 },
+      { type: 'police', path: loop, speed: 4.5, offset: 0.3 },
+      { type: 'pickup', color: 0x2a9d8f, path: loop, speed: 4.5, offset: 0.55 },
+      { type: 'hatch', color: 0xe76f51, path: loop, speed: 4.5, offset: 0.8 },
+    ],
+  };
+}
+
 export const LEVELS = [
   level1(), level2(), level3(), level4(), level5(), level6(), level7(), level8(),
   level9(), level10(), level11(), level12(), level13(), level14(), level15(), level16(),
+  needleEye(), truckParallel(), pillarHell(), busReverse(), coneGauntlet(), gridlock(),
 ];
 
 // Free Drive: a big mixed lot with traffic and no goal. Any vehicle can be used.
