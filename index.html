@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Park It! — 3D Parking Game</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+  </script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud">
+    <div class="panel" id="info">
+      <div id="hud-level"></div>
+      <div class="row"><span>Time</span><b id="hud-time">0.0s</b></div>
+      <div class="row"><span>Par</span><b id="hud-par"></b></div>
+      <div class="row"><span>Bumps</span><b id="hud-hits">0</b></div>
+    </div>
+
+    <div class="panel" id="gauge">
+      <div id="hud-gear">D</div>
+      <div><b id="hud-speed">0</b><small> km/h</small></div>
+    </div>
+
+    <div id="sensors">
+      <div class="sensor" id="sensor-front" data-level="0"><span>Front</span><i></i><i></i><i></i><i></i></div>
+      <div class="sensor" id="sensor-rear" data-level="0"><span>Rear</span><i></i><i></i><i></i><i></i></div>
+    </div>
+
+    <div id="status-wrap">
+      <div id="hud-status"></div>
+      <div class="bar"><div id="hud-progress"></div></div>
+    </div>
+
+    <div id="hud-buttons">
+      <button id="btn-camera" title="Camera (C)">🎥</button>
+      <button id="btn-restart" title="Restart (R)">↻</button>
+      <button id="btn-menu" title="Menu (Esc)">☰</button>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <div id="touch">
+    <div class="cluster">
+      <button data-touch="left">◀</button>
+      <button data-touch="right">▶</button>
+    </div>
+    <div class="cluster">
+      <button data-touch="brake" class="pedal brake">BRAKE<br /><small>/ REV</small></button>
+      <button data-touch="gas" class="pedal gas">GAS</button>
+    </div>
+  </div>
+
+  <div id="overlay"></div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
